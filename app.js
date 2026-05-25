@@ -47,6 +47,13 @@ let lastRun = {
   errors: [],
   whatsapp: { sent: 0, failed: 0, skipped: 0, reason: 'not-run' },
 };
+let redditFetchStatus = {
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastError: null,
+  postsScanned: null,
+  tickersUpdated: 0,
+};
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(ROOT, 'templates'));
@@ -124,14 +131,30 @@ async function refreshRedditInterestCache(tickers, { force = false } = {}) {
     return;
   }
 
-  const interestMap = await fetchRedditTickerInterest(tickers);
+  const attemptAt = new Date().toISOString();
+  redditFetchStatus.lastAttemptAt = attemptAt;
 
-  for (const ticker of tickers) {
-    const value = interestMap.get(ticker) || null;
-    redditInterestByTicker.set(ticker, {
-      fetchedAtMs: nowMs,
-      value,
-    });
+  try {
+    const interestMap = await fetchRedditTickerInterest(tickers);
+
+    let postsScanned = 0;
+    for (const ticker of tickers) {
+      const value = interestMap.get(ticker) || null;
+      redditInterestByTicker.set(ticker, {
+        fetchedAtMs: nowMs,
+        value,
+      });
+      if (Number.isFinite(value?.postsScanned)) {
+        postsScanned = Math.max(postsScanned, value.postsScanned);
+      }
+    }
+
+    redditFetchStatus.lastSuccessAt = new Date().toISOString();
+    redditFetchStatus.lastError = null;
+    redditFetchStatus.postsScanned = postsScanned;
+    redditFetchStatus.tickersUpdated = tickers.length;
+  } catch (error) {
+    redditFetchStatus.lastError = error?.message || 'Unknown Reddit fetch error';
   }
 }
 
@@ -572,6 +595,10 @@ app.get('/health', (_req, res) => {
     schedule: SCHEDULE_CRON,
     thresholdPct: runtimeConfig.alertThresholdPct,
     threshold2DayPct: runtimeConfig.alert2DayThresholdPct,
+    redditInterest: {
+      ...redditFetchStatus,
+      cacheSize: redditInterestByTicker.size,
+    },
     lastRun,
   });
 });
