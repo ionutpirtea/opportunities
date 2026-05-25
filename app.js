@@ -411,7 +411,7 @@ async function runPriceCheck({ reason = 'scheduled' } = {}) {
         alertRows.push({
           timestamp,
           ticker: row.ticker,
-          old_price: previous.price,
+          old_price: Number.isFinite(previous?.price) ? previous.price : '',
           new_price: result.price,
           change_pct: Number.isFinite(change) ? change.toFixed(3) : Number(twoDayChange || 0).toFixed(3),
           threshold_pct: thresholdUsed,
