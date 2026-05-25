@@ -1,0 +1,20 @@
+{
+  "name": "ticker-price-monitor",
+  "version": "1.0.0",
+  "description": "Web app for scheduled Yahoo Finance ticker checks, CSV history, and alerts",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node app.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ejs": "^3.1.10",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3",
+    "twilio": "^5.5.3"
+  }
+}

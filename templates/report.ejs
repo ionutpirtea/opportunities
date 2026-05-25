@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title><%= pageTitle %></title>
+    <link rel="stylesheet" href="/public/styles.css" />
+  </head>
+  <body>
+    <% 
+      const hasNumericValue = (value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+      const fmtPrice = (value) => (hasNumericValue(value) ? Number(value).toFixed(2) : 'n/a');
+      const fmtPct = (value) => (hasNumericValue(value) ? `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%` : 'n/a');
+    %>
+    <main class="page">
+      <nav class="top-nav">
+        <a href="/report" class="<%= pageKey === 'stocks' ? 'active' : '' %>">Stock Report</a>
+        <a href="/index-report" class="<%= pageKey === 'indices' ? 'active' : '' %>">Index Report</a>
+        <a href="/movers">Biggest Movers</a>
+      </nav>
+
+      <header class="hero">
+        <div>
+          <h1><%= pageTitle %></h1>
+          <p>Live snapshot from Yahoo Finance, persisted to CSV.</p>
+        </div>
+        <div class="hero-meta">
+          <form method="get" action="<%= config.reportPath %>" class="filters">
+            <label>
+              Sort %
+              <select name="sortBy">
+                <option value="none" <%= config.sortBy === 'none' ? 'selected' : '' %>>None</option>
+                <option value="pct1d" <%= config.sortBy === 'pct1d' ? 'selected' : '' %>>Today vs 1D</option>
+                <option value="pct1m" <%= config.sortBy === 'pct1m' ? 'selected' : '' %>>Today vs 1M</option>
+                <option value="pct1y" <%= config.sortBy === 'pct1y' ? 'selected' : '' %>>Today vs 1Y</option>
+              </select>
+            </label>
+            <label>
+              Direction
+              <select name="sortDir">
+                <option value="desc" <%= config.sortDir === 'desc' ? 'selected' : '' %>>High to Low</option>
+                <option value="asc" <%= config.sortDir === 'asc' ? 'selected' : '' %>>Low to High</option>
+              </select>
+            </label>
+            <button type="submit">Sort</button>
+          </form>
+          <p><strong>Cron:</strong> <code><%= config.schedule %></code></p>
+          <p><strong>Alert Threshold:</strong> <%= config.threshold %>%</p>
+          <p><strong>2-Day Threshold:</strong> <%= config.threshold2Day %>%</p>
+          <form id="thresholdForm" class="filters" action="#">
+            <label>
+              Single Check %
+              <input id="thresholdPctInput" type="number" min="0.1" max="100" step="0.1" value="<%= config.threshold %>" />
+            </label>
+            <label>
+              2-Day %
+              <input id="threshold2DayPctInput" type="number" min="0.1" max="100" step="0.1" value="<%= config.threshold2Day %>" />
+            </label>
+            <button id="saveThresholdsBtn" type="submit">Save Thresholds</button>
+          </form>
+          <p id="thresholdStatus" class="muted"></p>
+          <p><strong>WhatsApp Mode:</strong> <%= config.whatsappDigestMode %></p>
+          <div class="filters">
+            <button id="testWhatsappBtn" type="button">Test WhatsApp</button>
+          </div>
+          <p id="whatsappStatus" class="muted"></p>
+          <p><strong>Generated:</strong> <%= generatedAt %></p>
+          <% if (showRunSection) { %>
+          <button id="runCheckBtn">Run Stock Check Now</button>
+          <% } %>
+        </div>
+      </header>
+
+      <% if (showRunSection) { %>
+      <section class="panel">
+        <h2>Last Run</h2>
+        <div class="grid">
+          <div><span>Total</span><strong><%= run.total %></strong></div>
+          <div><span>Success</span><strong><%= run.success %></strong></div>
+          <div><span>Failed</span><strong><%= run.failed %></strong></div>
+          <div><span>Alerts</span><strong><%= run.alerts %></strong></div>
+        </div>
+        <p class="muted">Started: <%= run.startedAt || 'n/a' %> | Finished: <%= run.finishedAt || 'n/a' %> | Reason: <%= run.reason || 'n/a' %></p>
+      </section>
+      <% } %>
+
+      <section class="panel">
+        <h2>Latest Prices (<%= latestRows.length %> tickers)</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Description</th>
+                <th>Reddit Interest</th>
+                <th>Today Price</th>
+                <th>Currency</th>
+                <th>1D Ago Close</th>
+                <th>Today vs 1D</th>
+                <th>1M Ago Price</th>
+                <th>Today vs 1M</th>
+                <th>1Y Ago Price</th>
+                <th>Today vs 1Y</th>
+                <th>Timestamp</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% latestRows.forEach((row) => { %>
+              <tr>
+                <td><strong><%= row.ticker %></strong></td>
+                <td><%= row.description || 'n/a' %></td>
+                <td title="Posts scanned: <%= row.redditPostsScanned ?? 'n/a' %>"><%= Number.isFinite(row.redditMentions) ? row.redditMentions : 'n/a' %></td>
+                <td><%= fmtPrice(row.price) %></td>
+                <td><%= row.currency || 'n/a' %></td>
+                <td title="<%= row.oneBusinessDayAgoDate || '' %>"><%= fmtPrice(row.oneBusinessDayAgoPrice) %></td>
+                <td class="<%= Number.isFinite(row.pctVsOneBusinessDayAgo) ? (row.pctVsOneBusinessDayAgo >= 0 ? 'up' : 'down') : '' %>">
+                  <%= fmtPct(row.pctVsOneBusinessDayAgo) %>
+                </td>
+                <td title="<%= row.oneMonthAgoDate || '' %>"><%= fmtPrice(row.oneMonthAgoPrice) %></td>
+                <td class="<%= Number.isFinite(row.pctVsOneMonthAgo) ? (row.pctVsOneMonthAgo >= 0 ? 'up' : 'down') : '' %>">
+                  <%= fmtPct(row.pctVsOneMonthAgo) %>
+                </td>
+                <td title="<%= row.oneYearAgoDate || '' %>"><%= fmtPrice(row.oneYearAgoPrice) %></td>
+                <td class="<%= Number.isFinite(row.pctVsOneYearAgo) ? (row.pctVsOneYearAgo >= 0 ? 'up' : 'down') : '' %>">
+                  <%= fmtPct(row.pctVsOneYearAgo) %>
+                </td>
+                <td><%= row.timestamp || 'n/a' %></td>
+              </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <% if (showAlertsSection) { %>
+      <section class="panel">
+        <h2>Recent Alerts (<%= alerts.length %>)</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Ticker</th>
+                <th>Old Price</th>
+                <th>New Price</th>
+                <th>Change %</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (alerts.length === 0) { %>
+              <tr>
+                <td colspan="6">No alerts yet.</td>
+              </tr>
+              <% } %>
+              <% alerts.forEach((alert) => { %>
+              <tr>
+                <td><%= alert.timestamp %></td>
+                <td><strong><%= alert.ticker %></strong></td>
+                <td><%= fmtPrice(alert.old_price) %></td>
+                <td><%= fmtPrice(alert.new_price) %></td>
+                <td><%= fmtPct(alert.change_pct) %></td>
+                <td><%= alert.reason %></td>
+              </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <% } %>
+    </main>
+
+    <script>
+      const btn = document.getElementById('runCheckBtn');
+      const thresholdForm = document.getElementById('thresholdForm');
+      const thresholdStatus = document.getElementById('thresholdStatus');
+      const testWhatsappBtn = document.getElementById('testWhatsappBtn');
+      const whatsappStatus = document.getElementById('whatsappStatus');
+      if (btn) {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          btn.textContent = 'Checking...';
+          try {
+            const res = await fetch('/run-check', { method: 'POST' });
+            if (!res.ok) {
+              throw new Error('Manual run failed');
+            }
+            location.reload();
+          } catch (e) {
+            alert(e.message);
+          } finally {
+            btn.disabled = false;
+            btn.textContent = 'Run Stock Check Now';
+          }
+        });
+      }
+
+      if (thresholdForm) {
+        thresholdForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+
+          const saveBtn = document.getElementById('saveThresholdsBtn');
+          const thresholdPctInput = document.getElementById('thresholdPctInput');
+          const threshold2DayPctInput = document.getElementById('threshold2DayPctInput');
+
+          const payload = {
+            thresholdPct: Number(thresholdPctInput.value),
+            threshold2DayPct: Number(threshold2DayPctInput.value),
+          };
+
+          saveBtn.disabled = true;
+          const previousText = saveBtn.textContent;
+          saveBtn.textContent = 'Saving...';
+          thresholdStatus.textContent = '';
+
+          try {
+            const res = await fetch('/config/thresholds', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({ error: 'Failed to save thresholds' }));
+              throw new Error(err.error || 'Failed to save thresholds');
+            }
+
+            thresholdStatus.textContent = 'Thresholds updated. New values are active for next checks.';
+            setTimeout(() => location.reload(), 500);
+          } catch (error) {
+            thresholdStatus.textContent = error.message;
+          } finally {
+            saveBtn.disabled = false;
+            saveBtn.textContent = previousText;
+          }
+        });
+      }
+
+      if (testWhatsappBtn) {
+        testWhatsappBtn.addEventListener('click', async () => {
+          testWhatsappBtn.disabled = true;
+          const previousText = testWhatsappBtn.textContent;
+          testWhatsappBtn.textContent = 'Sending...';
+          whatsappStatus.textContent = '';
+
+          try {
+            const res = await fetch('/whatsapp/test', { method: 'POST' });
+            const payload = await res.json().catch(() => ({ reason: 'unknown' }));
+            if (!res.ok) {
+              throw new Error(`Test failed: ${payload.reason || 'unknown'}`);
+            }
+
+            whatsappStatus.textContent = 'Test message sent. Check your WhatsApp account.';
+          } catch (error) {
+            whatsappStatus.textContent = error.message;
+          } finally {
+            testWhatsappBtn.disabled = false;
+            testWhatsappBtn.textContent = previousText;
+          }
+        });
+      }
+
+      setTimeout(() => location.reload(), 120000);
+    </script>
+  </body>
+</html>

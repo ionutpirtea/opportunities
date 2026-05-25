@@ -1,0 +1,4 @@
+node_modules/
+.env
+data/price_history.csv
+data/alerts.csv

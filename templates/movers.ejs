@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Biggest Movers</title>
+    <link rel="stylesheet" href="/public/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <nav class="top-nav">
+        <a href="/report">Report</a>
+        <a href="/movers" class="active">Biggest Movers</a>
+      </nav>
+
+      <header class="hero">
+        <div>
+          <h1>Biggest Movers</h1>
+          <p>Sorted by absolute percentage move over the selected window.</p>
+        </div>
+        <div class="hero-meta">
+          <form method="get" action="/movers" class="filters">
+            <label>
+              Hours
+              <input type="number" min="1" max="720" name="hours" value="<%= hours %>" />
+            </label>
+            <label>
+              Limit
+              <input type="number" min="1" max="100" name="limit" value="<%= limit %>" />
+            </label>
+            <button type="submit">Apply</button>
+          </form>
+          <p><strong>Generated:</strong> <%= generatedAt %></p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <h2>Top Moves (<%= movers.length %>)</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Start Price</th>
+                <th>End Price</th>
+                <th>Change %</th>
+                <th>Start Time</th>
+                <th>End Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (movers.length === 0) { %>
+              <tr>
+                <td colspan="6">No movement data found for this window yet.</td>
+              </tr>
+              <% } %>
+              <% movers.forEach((row) => { %>
+              <tr>
+                <td><strong><%= row.ticker %></strong></td>
+                <td><%= row.startPrice %></td>
+                <td><%= row.endPrice %></td>
+                <td class="<%= row.changePct >= 0 ? 'up' : 'down' %>">
+                  <%= row.changePct >= 0 ? '+' : '' %><%= row.changePct.toFixed(2) %>%
+                </td>
+                <td><%= row.startTime %></td>
+                <td><%= row.endTime %></td>
+              </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
