@@ -1,4 +1,38 @@
-const REDDIT_BASE = 'https://www.reddit.com';
+const REDDIT_BASES = ['https://www.reddit.com', 'https://old.reddit.com'];
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function withTimeout(ms) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ms);
+  return {
+    signal: controller.signal,
+    clear: () => clearTimeout(timeout),
+  };
+}
+
+function buildVariants(ticker) {
+  const variants = new Set([ticker]);
+  if (ticker.includes('.')) {
+    variants.add(ticker.replace(/\./g, '-'));
+  }
+  if (ticker.includes('-')) {
+    variants.add(ticker.replace(/-/g, '.'));
+  }
+  return [...variants].filter(Boolean);
+}
+
+function buildTokenRegex(variants, { caseInsensitive = true } = {}) {
+  const escaped = variants.map((value) => escapeRegex(value));
+  if (escaped.length === 0) {
+    return null;
+  }
+
+  const flags = caseInsensitive ? 'i' : '';
+  return new RegExp(`(?:^|[^A-Z0-9])(?:${escaped.join('|')})(?=$|[^A-Z0-9])`, flags);
+}
 
 function buildTickerMatchers(tickers) {
   const matchers = new Map();
@@ -8,33 +42,54 @@ function buildTickerMatchers(tickers) {
       continue;
     }
 
-    const escaped = ticker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex =
-      ticker.length <= 3
-        ? new RegExp(`\\$${escaped}\\b`, 'i')
-        : new RegExp(`(?:\\$${escaped}\\b|\\b${escaped}\\b)`, 'i');
+    const variants = buildVariants(ticker);
+    const cashtagRegex = new RegExp(`\\$(?:${variants.map((value) => escapeRegex(value)).join('|')})\\b`, 'i');
 
-    matchers.set(ticker, regex);
+    // For very short symbols, avoid noisy matches in normal text.
+    const wordRegex =
+      ticker.length <= 2
+        ? null
+        : ticker.length === 3
+          ? buildTokenRegex(variants, { caseInsensitive: false })
+          : buildTokenRegex(variants, { caseInsensitive: true });
+
+    matchers.set(ticker, { cashtagRegex, wordRegex });
   }
 
   return matchers;
 }
 
 async function fetchSubredditPosts(subreddit, { sort = 'new', limit = 100 } = {}) {
-  const url = `${REDDIT_BASE}/r/${encodeURIComponent(subreddit)}/${encodeURIComponent(sort)}.json?limit=${limit}`;
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'TickerMonitor/1.0',
-      Accept: 'application/json',
-    },
-  });
+  const path = `/r/${encodeURIComponent(subreddit)}/${encodeURIComponent(sort)}.json?limit=${limit}&raw_json=1`;
+  let lastError = null;
 
-  if (!response.ok) {
-    throw new Error(`Reddit request failed for r/${subreddit}: ${response.status} ${response.statusText}`);
+  for (const base of REDDIT_BASES) {
+    const url = `${base}${path}`;
+    const timeout = withTimeout(12000);
+
+    try {
+      const response = await fetch(url, {
+        signal: timeout.signal,
+        headers: {
+          'User-Agent': 'ticker-price-monitor/1.0 (+https://github.com/ionutpirtea/opportunities)',
+          Accept: 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Reddit request failed for r/${subreddit} via ${base}: ${response.status} ${response.statusText}`);
+      }
+
+      const payload = await response.json();
+      return payload?.data?.children?.map((item) => item?.data).filter(Boolean) || [];
+    } catch (error) {
+      lastError = error;
+    } finally {
+      timeout.clear();
+    }
   }
 
-  const payload = await response.json();
-  return payload?.data?.children?.map((item) => item?.data).filter(Boolean) || [];
+  throw lastError || new Error(`Reddit request failed for r/${subreddit}`);
 }
 
 async function fetchRedditTickerInterest(tickers) {
@@ -72,8 +127,10 @@ async function fetchRedditTickerInterest(tickers) {
   for (const post of posts) {
     const text = `${post.title || ''}\n${post.selftext || ''}`;
 
-    for (const [ticker, regex] of matchers.entries()) {
-      if (!regex.test(text)) {
+    for (const [ticker, matcher] of matchers.entries()) {
+      const matchesCashtag = matcher.cashtagRegex.test(text);
+      const matchesWord = matcher.wordRegex ? matcher.wordRegex.test(text) : false;
+      if (!matchesCashtag && !matchesWord) {
         continue;
       }
 
