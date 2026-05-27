@@ -27,6 +27,7 @@
         </div>
         <div class="hero-meta">
           <p><strong>Rule:</strong> current price <= <%= (100 - thresholdPct).toFixed(0) %>% of 52-week high</p>
+          <p><strong>Min Market Cap:</strong> $<%= (Number(minMarketCap || 0) / 1000000000).toFixed(1) %>B</p>
           <p><strong>Generated:</strong> <%= generatedAt %></p>
         </div>
       </header>
@@ -76,6 +77,7 @@
               <tr>
                 <th>Timestamp</th>
                 <th>Ticker</th>
+                <th>Company</th>
                 <th>52W High</th>
                 <th>Current Price</th>
                 <th>Gap to High %</th>
@@ -85,13 +87,14 @@
             <tbody>
               <% if (alerts.length === 0) { %>
               <tr>
-                <td colspan="6">No alert events yet.</td>
+                <td colspan="7">No alert events yet.</td>
               </tr>
               <% } %>
               <% alerts.forEach((alert) => { %>
               <tr>
                 <td><%= alert.timestamp %></td>
                 <td><strong><%= alert.ticker %></strong></td>
+                <td><%= descriptionMap?.[alert.ticker] || 'n/a' %></td>
                 <td><%= fmtPrice(alert.old_price) %></td>
                 <td><%= fmtPrice(alert.new_price) %></td>
                 <td class="down"><%= fmtPct(alert.change_pct) %></td>

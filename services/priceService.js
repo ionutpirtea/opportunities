@@ -1,3 +1,9 @@
+const { default: YahooFinance } = require('yahoo-finance2');
+
+const yahooFinance = new YahooFinance({
+  suppressNotices: ['yahooSurvey'],
+});
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -334,8 +340,49 @@ async function fetchBatchTickerDescriptions(yahooSymbols) {
   return out;
 }
 
+async function fetchBatchTickerMarketCaps(yahooSymbols) {
+  if (!Array.isArray(yahooSymbols) || yahooSymbols.length === 0) {
+    return new Map();
+  }
+
+  const out = new Map();
+  const queue = [...new Set(yahooSymbols.filter(Boolean))];
+  const workers = [];
+  const concurrency = 4;
+
+  for (let i = 0; i < concurrency; i += 1) {
+    workers.push(
+      (async () => {
+        while (queue.length > 0) {
+          const symbol = queue.shift();
+          if (!symbol) {
+            continue;
+          }
+
+          try {
+            const quote = await yahooFinance.quote(symbol);
+            const marketCap = Number(quote?.marketCap);
+            if (Number.isFinite(marketCap) && marketCap > 0) {
+              out.set(String(symbol).toUpperCase(), marketCap);
+            }
+          } catch {
+            // Best effort only.
+          }
+
+          await sleep(120);
+        }
+      })()
+    );
+  }
+
+  await Promise.all(workers);
+
+  return out;
+}
+
 module.exports = {
   fetchBatchTickerPrices,
   fetchBatchReferencePrices,
   fetchBatchTickerDescriptions,
+  fetchBatchTickerMarketCaps,
 };

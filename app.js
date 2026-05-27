@@ -5,7 +5,12 @@ const express = require('express');
 const cron = require('node-cron');
 
 const { loadTickersFromCsv, toYahooSymbol } = require('./services/tickerSource');
-const { fetchBatchTickerPrices, fetchBatchReferencePrices, fetchBatchTickerDescriptions } = require('./services/priceService');
+const {
+  fetchBatchTickerPrices,
+  fetchBatchReferencePrices,
+  fetchBatchTickerDescriptions,
+  fetchBatchTickerMarketCaps,
+} = require('./services/priceService');
 const { ensureCsv, appendCsvRows, readCsv } = require('./services/storage');
 const { createWhatsAppSender } = require('./services/whatsappAlert');
 const { fetchRedditTickerInterest } = require('./services/redditInterest');
@@ -15,6 +20,7 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const SCHEDULE_CRON = process.env.SCHEDULE_CRON || '*/15 * * * *';
 const ALERT_BELOW_52WEEK_HIGH_PCT = Number(process.env.ALERT_BELOW_52WEEK_HIGH_PCT || 20);
+const ALERT_MIN_MARKET_CAP = Number(process.env.ALERT_MIN_MARKET_CAP || 2000000000);
 const WHATSAPP_DIGEST_MODE = (process.env.WHATSAPP_DIGEST_MODE || 'single').toLowerCase();
 const TZ = process.env.TZ;
 
@@ -31,9 +37,11 @@ const latestByTicker = new Map();
 const referenceByTicker = new Map();
 const redditInterestByTicker = new Map();
 const descriptionByTicker = new Map();
+const marketCapByTicker = new Map();
 const whatsapp = createWhatsAppSender();
 const runtimeConfig = {
   alertBelow52WeekHighPct: Number.isFinite(ALERT_BELOW_52WEEK_HIGH_PCT) ? ALERT_BELOW_52WEEK_HIGH_PCT : 20,
+  alertMinMarketCap: Number.isFinite(ALERT_MIN_MARKET_CAP) && ALERT_MIN_MARKET_CAP > 0 ? ALERT_MIN_MARKET_CAP : 2000000000,
 };
 let lastRun = {
   startedAt: null,
@@ -204,6 +212,47 @@ async function refreshDescriptionCache(tickers, { force = false } = {}) {
   }
 }
 
+async function refreshMarketCapCache(tickers, { force = false } = {}) {
+  const successStaleMs = 24 * 60 * 60 * 1000;
+  const missingStaleMs = 60 * 60 * 1000;
+  const nowMs = Date.now();
+  const missingRows = [];
+
+  for (const ticker of tickers) {
+    const cached = marketCapByTicker.get(ticker);
+    const ttl = Number.isFinite(cached?.value) ? successStaleMs : missingStaleMs;
+    if (force || !cached || nowMs - cached.fetchedAtMs > ttl) {
+      missingRows.push({ ticker, yahooSymbol: toYahooSymbol(ticker) });
+    }
+  }
+
+  if (missingRows.length === 0) {
+    return;
+  }
+
+  const symbolToTicker = new Map(missingRows.map((row) => [row.yahooSymbol, row.ticker]));
+  const marketCapMap = await fetchBatchTickerMarketCaps(missingRows.map((row) => row.yahooSymbol));
+
+  for (const row of missingRows) {
+    marketCapByTicker.set(row.ticker, {
+      fetchedAtMs: nowMs,
+      value: null,
+    });
+  }
+
+  for (const [symbol, marketCap] of marketCapMap.entries()) {
+    const ticker = symbolToTicker.get(symbol);
+    if (!ticker) {
+      continue;
+    }
+
+    marketCapByTicker.set(ticker, {
+      fetchedAtMs: nowMs,
+      value: marketCap,
+    });
+  }
+}
+
 function parseTimestamp(value) {
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
@@ -284,6 +333,7 @@ function buildReportRows(tickers, latestMap) {
     const oneMonthPrice = Number.isFinite(refs?.oneMonthAgo?.price) ? refs.oneMonthAgo.price : null;
     const oneYearPrice = Number.isFinite(refs?.oneYearAgo?.price) ? refs.oneYearAgo.price : null;
     const high52Week = Number.isFinite(refs?.high52Week) ? refs.high52Week : null;
+    const marketCap = Number.isFinite(marketCapByTicker.get(ticker)?.value) ? marketCapByTicker.get(ticker).value : null;
 
     return {
       ticker,
@@ -300,6 +350,7 @@ function buildReportRows(tickers, latestMap) {
       oneYearAgoPrice: oneYearPrice,
       oneYearAgoDate: refs?.oneYearAgo?.date || '',
       high52Week,
+      marketCap,
       pctVsOneBusinessDayAgo: pctDiffFromReference(currentPrice, oneDayPrice),
       pctVsOneMonthAgo: pctDiffFromReference(currentPrice, oneMonthPrice),
       pctVsOneYearAgo: pctDiffFromReference(currentPrice, oneYearPrice),
@@ -308,10 +359,23 @@ function buildReportRows(tickers, latestMap) {
   });
 }
 
-function buildAlertCandidates(rows, { minPctBelow = 20 } = {}) {
+function buildAlertCandidates(rows, { minPctBelow = 20, minMarketCap = 2000000000 } = {}) {
   return rows
-    .filter((row) => Number.isFinite(row?.pctBelow52WeekHigh) && row.pctBelow52WeekHigh >= minPctBelow)
+    .filter(
+      (row) =>
+        Number.isFinite(row?.pctBelow52WeekHigh) &&
+        row.pctBelow52WeekHigh >= minPctBelow &&
+        Number.isFinite(row?.marketCap) &&
+        row.marketCap >= minMarketCap
+    )
     .sort((a, b) => b.pctBelow52WeekHigh - a.pctBelow52WeekHigh);
+}
+
+function filterAlertsByMarketCap(alerts, { minMarketCap = 2000000000 } = {}) {
+  return alerts.filter((alert) => {
+    const marketCap = Number.isFinite(marketCapByTicker.get(alert.ticker)?.value) ? marketCapByTicker.get(alert.ticker).value : null;
+    return Number.isFinite(marketCap) && marketCap >= minMarketCap;
+  });
 }
 
 function computeMovers(historyRows, { sinceMs = null, limit = 20 } = {}) {
@@ -382,6 +446,7 @@ async function runPriceCheck({ reason = 'scheduled' } = {}) {
   const startedAt = new Date();
   const tickers = await loadTickersFromCsv(TICKERS_CSV);
   await refreshReferenceCache(tickers, { force: false });
+  await refreshMarketCapCache(tickers, { force: false });
 
   const historyRows = [];
   const alertRows = [];
@@ -429,8 +494,10 @@ async function runPriceCheck({ reason = 'scheduled' } = {}) {
       const refs = referenceByTicker.get(row.ticker)?.refs;
       const high52Week = Number.isFinite(refs?.high52Week) ? refs.high52Week : null;
       const pctBelow52WeekHigh = pctBelowReference(result.price, high52Week);
+      const marketCap = Number.isFinite(marketCapByTicker.get(row.ticker)?.value) ? marketCapByTicker.get(row.ticker).value : null;
+      const marketCapEligible = Number.isFinite(marketCap) && marketCap >= runtimeConfig.alertMinMarketCap;
 
-      if (pctBelow52WeekHigh != null && pctBelow52WeekHigh >= runtimeConfig.alertBelow52WeekHighPct) {
+      if (marketCapEligible && pctBelow52WeekHigh != null && pctBelow52WeekHigh >= runtimeConfig.alertBelow52WeekHighPct) {
         const drawdownPct = Number(pctBelow52WeekHigh.toFixed(3));
 
         alertRows.push({
@@ -493,14 +560,18 @@ app.get('/report', async (_req, res, next) => {
     await refreshReferenceCache(tickers, { force: forceRefresh });
     await refreshRedditInterestCache(tickers, { force: forceRefreshReddit });
     await refreshDescriptionCache(tickers, { force: forceRefreshDesc });
+    await refreshMarketCapCache(tickers, { force: forceRefreshDesc });
 
     const latestRows = buildReportRows(tickers, latestByTicker);
+    const filteredAlerts = filterAlertsByMarketCap(alerts, { minMarketCap: runtimeConfig.alertMinMarketCap })
+      .slice(-100)
+      .reverse();
 
     const sortedRows = sortReportRows(latestRows, { sortBy, sortDir });
 
     res.render('report', {
       latestRows: sortedRows,
-      alerts: alerts.slice(-100).reverse(),
+      alerts: filteredAlerts,
       run: lastRun,
       pageTitle: 'Stock Report',
       pageKey: 'stocks',
@@ -533,6 +604,7 @@ app.get('/index-report', async (_req, res, next) => {
     await refreshReferenceCache(indices, { force: forceRefresh });
     await refreshRedditInterestCache(indices, { force: forceRefreshReddit });
     await refreshDescriptionCache(indices, { force: forceRefreshDesc });
+    await refreshMarketCapCache(indices, { force: forceRefreshDesc });
 
     const liveLatestMap = await fetchLatestSnapshot(indices);
     const latestRows = buildReportRows(indices, liveLatestMap);
@@ -562,10 +634,13 @@ app.get('/index-report', async (_req, res, next) => {
 });
 
 app.get('/alerts', async (_req, res) => {
+  const tickers = await loadTickersFromCsv(TICKERS_CSV);
+  await refreshMarketCapCache(tickers, { force: false });
   const alerts = await readCsv(ALERTS_CSV);
+  const filteredAlerts = filterAlertsByMarketCap(alerts, { minMarketCap: runtimeConfig.alertMinMarketCap });
   res.json({
-    count: alerts.length,
-    alerts: alerts.slice(-200).reverse(),
+    count: filteredAlerts.length,
+    alerts: filteredAlerts.slice(-200).reverse(),
   });
 });
 
@@ -579,19 +654,27 @@ app.get('/alerts-page', async (_req, res, next) => {
     await refreshReferenceCache(tickers, { force: forceRefresh });
     await refreshRedditInterestCache(tickers, { force: forceRefreshReddit });
     await refreshDescriptionCache(tickers, { force: forceRefreshDesc });
+    await refreshMarketCapCache(tickers, { force: forceRefreshDesc });
 
     const latestRows = buildReportRows(tickers, latestByTicker);
+    const descriptionMap = Object.fromEntries(latestRows.map((row) => [row.ticker, row.description || '']));
     const candidates = buildAlertCandidates(latestRows, {
       minPctBelow: runtimeConfig.alertBelow52WeekHighPct,
+      minMarketCap: runtimeConfig.alertMinMarketCap,
     });
     const alerts = await readCsv(ALERTS_CSV);
+    const filteredAlerts = filterAlertsByMarketCap(alerts, { minMarketCap: runtimeConfig.alertMinMarketCap })
+      .slice(-200)
+      .reverse();
 
     res.render('alerts', {
       pageTitle: 'Alerts',
       pageKey: 'alerts',
       thresholdPct: runtimeConfig.alertBelow52WeekHighPct,
+      minMarketCap: runtimeConfig.alertMinMarketCap,
       candidates,
-      alerts: alerts.slice(-200).reverse(),
+      descriptionMap,
+      alerts: filteredAlerts,
       generatedAt: new Date().toISOString(),
     });
   } catch (error) {
@@ -624,6 +707,7 @@ app.get('/health', (_req, res) => {
     now: new Date().toISOString(),
     schedule: SCHEDULE_CRON,
     alertBelow52WeekHighPct: runtimeConfig.alertBelow52WeekHighPct,
+    alertMinMarketCap: runtimeConfig.alertMinMarketCap,
     redditInterest: {
       ...redditFetchStatus,
       cacheSize: redditInterestByTicker.size,
