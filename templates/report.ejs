@@ -16,6 +16,7 @@
       <nav class="top-nav">
         <a href="/report" class="<%= pageKey === 'stocks' ? 'active' : '' %>">Stock Report</a>
         <a href="/index-report" class="<%= pageKey === 'indices' ? 'active' : '' %>">Index Report</a>
+        <a href="/alerts-page" class="<%= pageKey === 'alerts' ? 'active' : '' %>">Alerts</a>
         <a href="/movers">Biggest Movers</a>
       </nav>
 
@@ -45,20 +46,7 @@
             <button type="submit">Sort</button>
           </form>
           <p><strong>Cron:</strong> <code><%= config.schedule %></code></p>
-          <p><strong>Alert Threshold:</strong> <%= config.threshold %>%</p>
-          <p><strong>2-Day Threshold:</strong> <%= config.threshold2Day %>%</p>
-          <form id="thresholdForm" class="filters" action="#">
-            <label>
-              Single Check %
-              <input id="thresholdPctInput" type="number" min="0.1" max="100" step="0.1" value="<%= config.threshold %>" />
-            </label>
-            <label>
-              2-Day %
-              <input id="threshold2DayPctInput" type="number" min="0.1" max="100" step="0.1" value="<%= config.threshold2Day %>" />
-            </label>
-            <button id="saveThresholdsBtn" type="submit">Save Thresholds</button>
-          </form>
-          <p id="thresholdStatus" class="muted"></p>
+          <p><strong>Alert Rule:</strong> <%= config.alertBelow52WeekHighPct %>% or more below 52-week high</p>
           <p><strong>WhatsApp Mode:</strong> <%= config.whatsappDigestMode %></p>
           <div class="filters">
             <button id="testWhatsappBtn" type="button">Test WhatsApp</button>
@@ -101,6 +89,8 @@
                 <th>Today vs 1M</th>
                 <th>1Y Ago Price</th>
                 <th>Today vs 1Y</th>
+                <th>52W High</th>
+                <th>Below 52W High</th>
                 <th>Timestamp</th>
               </tr>
             </thead>
@@ -124,6 +114,8 @@
                 <td class="<%= Number.isFinite(row.pctVsOneYearAgo) ? (row.pctVsOneYearAgo >= 0 ? 'up' : 'down') : '' %>">
                   <%= fmtPct(row.pctVsOneYearAgo) %>
                 </td>
+                <td><%= fmtPrice(row.high52Week) %></td>
+                <td class="<%= Number.isFinite(row.pctBelow52WeekHigh) ? 'down' : '' %>"><%= fmtPct(Number.isFinite(row.pctBelow52WeekHigh) ? -row.pctBelow52WeekHigh : null) %></td>
                 <td><%= row.timestamp || 'n/a' %></td>
               </tr>
               <% }) %>
@@ -141,9 +133,9 @@
               <tr>
                 <th>Timestamp</th>
                 <th>Ticker</th>
-                <th>Old Price</th>
-                <th>New Price</th>
-                <th>Change %</th>
+                <th>52W High</th>
+                <th>Current Price</th>
+                <th>Gap to High %</th>
                 <th>Reason</th>
               </tr>
             </thead>
@@ -172,8 +164,6 @@
 
     <script>
       const btn = document.getElementById('runCheckBtn');
-      const thresholdForm = document.getElementById('thresholdForm');
-      const thresholdStatus = document.getElementById('thresholdStatus');
       const testWhatsappBtn = document.getElementById('testWhatsappBtn');
       const whatsappStatus = document.getElementById('whatsappStatus');
       if (btn) {
@@ -191,47 +181,6 @@
           } finally {
             btn.disabled = false;
             btn.textContent = 'Run Stock Check Now';
-          }
-        });
-      }
-
-      if (thresholdForm) {
-        thresholdForm.addEventListener('submit', async (event) => {
-          event.preventDefault();
-
-          const saveBtn = document.getElementById('saveThresholdsBtn');
-          const thresholdPctInput = document.getElementById('thresholdPctInput');
-          const threshold2DayPctInput = document.getElementById('threshold2DayPctInput');
-
-          const payload = {
-            thresholdPct: Number(thresholdPctInput.value),
-            threshold2DayPct: Number(threshold2DayPctInput.value),
-          };
-
-          saveBtn.disabled = true;
-          const previousText = saveBtn.textContent;
-          saveBtn.textContent = 'Saving...';
-          thresholdStatus.textContent = '';
-
-          try {
-            const res = await fetch('/config/thresholds', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-            });
-
-            if (!res.ok) {
-              const err = await res.json().catch(() => ({ error: 'Failed to save thresholds' }));
-              throw new Error(err.error || 'Failed to save thresholds');
-            }
-
-            thresholdStatus.textContent = 'Thresholds updated. New values are active for next checks.';
-            setTimeout(() => location.reload(), 500);
-          } catch (error) {
-            thresholdStatus.textContent = error.message;
-          } finally {
-            saveBtn.disabled = false;
-            saveBtn.textContent = previousText;
           }
         });
       }

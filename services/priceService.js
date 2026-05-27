@@ -52,22 +52,31 @@ async function fetchTickerChartQuote(yahooSymbol) {
   };
 }
 
-function parseDailyCloses(payload) {
+function parseDailyPoints(payload) {
   const result = payload?.chart?.result?.[0];
   const timestamps = result?.timestamp || [];
   const closes = result?.indicators?.quote?.[0]?.close || [];
+  const highs = result?.indicators?.quote?.[0]?.high || [];
   const rows = [];
 
   for (let i = 0; i < timestamps.length; i += 1) {
     const ts = timestamps[i];
     const close = closes[i];
-    if (typeof ts !== 'number' || typeof close !== 'number' || !Number.isFinite(close)) {
+    const high = highs[i];
+    if (typeof ts !== 'number') {
+      continue;
+    }
+
+    const closeValue = typeof close === 'number' && Number.isFinite(close) ? close : null;
+    const highValue = typeof high === 'number' && Number.isFinite(high) ? high : null;
+    if (closeValue == null && highValue == null) {
       continue;
     }
 
     rows.push({
       timestampMs: ts * 1000,
-      close,
+      close: closeValue,
+      high: highValue,
     });
   }
 
@@ -93,13 +102,27 @@ function shiftBusinessDays(date, businessDays) {
 function pickCloseAtOrBefore(points, targetMs) {
   let best = null;
   for (const point of points) {
+    if (!Number.isFinite(point.close)) {
+      continue;
+    }
     if (point.timestampMs <= targetMs) {
       best = point;
     } else {
       break;
     }
   }
-  return best || points[0] || null;
+
+  if (best) {
+    return best;
+  }
+
+  for (const point of points) {
+    if (Number.isFinite(point.close)) {
+      return point;
+    }
+  }
+
+  return null;
 }
 
 async function fetchTickerReferencePrices(yahooSymbol) {
@@ -119,10 +142,21 @@ async function fetchTickerReferencePrices(yahooSymbol) {
   }
 
   const payload = await response.json();
-  const points = parseDailyCloses(payload);
+  const points = parseDailyPoints(payload);
   if (points.length === 0) {
     throw new Error('No daily closes found for reference prices');
   }
+
+  const numericHighs = points
+    .map((point) => {
+      if (Number.isFinite(point.high)) {
+        return point.high;
+      }
+      return Number.isFinite(point.close) ? point.close : null;
+    })
+    .filter((value) => Number.isFinite(value));
+
+  const high52Week = numericHighs.length > 0 ? Math.max(...numericHighs) : null;
 
   const now = new Date();
   const oneBusinessDayAgo = shiftBusinessDays(now, -1);
@@ -138,6 +172,7 @@ async function fetchTickerReferencePrices(yahooSymbol) {
   const oneYearPoint = pickCloseAtOrBefore(points, oneYearAgo.getTime());
 
   return {
+    high52Week,
     oneBusinessDayAgo: oneDayPoint
       ? {
           price: oneDayPoint.close,

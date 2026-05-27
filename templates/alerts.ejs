@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title><%= pageTitle %></title>
+    <link rel="stylesheet" href="/public/styles.css" />
+  </head>
+  <body>
+    <% 
+      const hasNumericValue = (value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+      const fmtPrice = (value) => (hasNumericValue(value) ? Number(value).toFixed(2) : 'n/a');
+      const fmtPct = (value) => (hasNumericValue(value) ? `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%` : 'n/a');
+    %>
+    <main class="page">
+      <nav class="top-nav">
+        <a href="/report">Stock Report</a>
+        <a href="/index-report">Index Report</a>
+        <a href="/alerts-page" class="active">Alerts</a>
+        <a href="/movers">Biggest Movers</a>
+      </nav>
+
+      <header class="hero">
+        <div>
+          <h1>Alerts</h1>
+          <p>Stocks currently at least <strong><%= thresholdPct %>%</strong> below their 52-week high.</p>
+        </div>
+        <div class="hero-meta">
+          <p><strong>Rule:</strong> current price <= <%= (100 - thresholdPct).toFixed(0) %>% of 52-week high</p>
+          <p><strong>Generated:</strong> <%= generatedAt %></p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <h2>Relevant Stocks (<%= candidates.length %>)</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Description</th>
+                <th>Current Price</th>
+                <th>52W High</th>
+                <th>Below 52W High %</th>
+                <th>Reddit Interest</th>
+                <th>Last Quote Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (candidates.length === 0) { %>
+              <tr>
+                <td colspan="7">No stocks currently match the 52-week-high drawdown rule.</td>
+              </tr>
+              <% } %>
+              <% candidates.forEach((row) => { %>
+              <tr>
+                <td><strong><%= row.ticker %></strong></td>
+                <td><%= row.description || 'n/a' %></td>
+                <td><%= fmtPrice(row.price) %></td>
+                <td><%= fmtPrice(row.high52Week) %></td>
+                <td class="down"><%= fmtPct(-row.pctBelow52WeekHigh) %></td>
+                <td title="Posts scanned: <%= row.redditPostsScanned ?? 'n/a' %>"><%= Number.isFinite(row.redditMentions) ? row.redditMentions : 'n/a' %></td>
+                <td><%= row.timestamp || 'n/a' %></td>
+              </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Recent Alert Events (<%= alerts.length %>)</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Ticker</th>
+                <th>52W High</th>
+                <th>Current Price</th>
+                <th>Gap to High %</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (alerts.length === 0) { %>
+              <tr>
+                <td colspan="6">No alert events yet.</td>
+              </tr>
+              <% } %>
+              <% alerts.forEach((alert) => { %>
+              <tr>
+                <td><%= alert.timestamp %></td>
+                <td><strong><%= alert.ticker %></strong></td>
+                <td><%= fmtPrice(alert.old_price) %></td>
+                <td><%= fmtPrice(alert.new_price) %></td>
+                <td class="down"><%= fmtPct(alert.change_pct) %></td>
+                <td><%= alert.reason %></td>
+              </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

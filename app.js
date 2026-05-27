@@ -14,8 +14,7 @@ const app = express();
 
 const PORT = Number(process.env.PORT || 3000);
 const SCHEDULE_CRON = process.env.SCHEDULE_CRON || '*/15 * * * *';
-const ALERT_THRESHOLD_PCT = Number(process.env.ALERT_THRESHOLD_PCT || 2);
-const ALERT_2DAY_THRESHOLD_PCT = Number(process.env.ALERT_2DAY_THRESHOLD_PCT || 3);
+const ALERT_BELOW_52WEEK_HIGH_PCT = Number(process.env.ALERT_BELOW_52WEEK_HIGH_PCT || 20);
 const WHATSAPP_DIGEST_MODE = (process.env.WHATSAPP_DIGEST_MODE || 'single').toLowerCase();
 const TZ = process.env.TZ;
 
@@ -34,8 +33,7 @@ const redditInterestByTicker = new Map();
 const descriptionByTicker = new Map();
 const whatsapp = createWhatsAppSender();
 const runtimeConfig = {
-  alertThresholdPct: Number.isFinite(ALERT_THRESHOLD_PCT) ? ALERT_THRESHOLD_PCT : 2,
-  alert2DayThresholdPct: Number.isFinite(ALERT_2DAY_THRESHOLD_PCT) ? ALERT_2DAY_THRESHOLD_PCT : 3,
+  alertBelow52WeekHighPct: Number.isFinite(ALERT_BELOW_52WEEK_HIGH_PCT) ? ALERT_BELOW_52WEEK_HIGH_PCT : 20,
 };
 let lastRun = {
   startedAt: null,
@@ -77,6 +75,13 @@ function pctDiffFromReference(current, reference) {
     return null;
   }
   return ((current - reference) / reference) * 100;
+}
+
+function pctBelowReference(current, referenceHigh) {
+  if (!Number.isFinite(current) || !Number.isFinite(referenceHigh) || referenceHigh <= 0) {
+    return null;
+  }
+  return ((referenceHigh - current) / referenceHigh) * 100;
 }
 
 async function refreshReferenceCache(tickers, { force = false } = {}) {
@@ -278,6 +283,7 @@ function buildReportRows(tickers, latestMap) {
     const oneDayPrice = Number.isFinite(refs?.oneBusinessDayAgo?.price) ? refs.oneBusinessDayAgo.price : null;
     const oneMonthPrice = Number.isFinite(refs?.oneMonthAgo?.price) ? refs.oneMonthAgo.price : null;
     const oneYearPrice = Number.isFinite(refs?.oneYearAgo?.price) ? refs.oneYearAgo.price : null;
+    const high52Week = Number.isFinite(refs?.high52Week) ? refs.high52Week : null;
 
     return {
       ticker,
@@ -293,11 +299,19 @@ function buildReportRows(tickers, latestMap) {
       oneMonthAgoDate: refs?.oneMonthAgo?.date || '',
       oneYearAgoPrice: oneYearPrice,
       oneYearAgoDate: refs?.oneYearAgo?.date || '',
+      high52Week,
       pctVsOneBusinessDayAgo: pctDiffFromReference(currentPrice, oneDayPrice),
       pctVsOneMonthAgo: pctDiffFromReference(currentPrice, oneMonthPrice),
       pctVsOneYearAgo: pctDiffFromReference(currentPrice, oneYearPrice),
+      pctBelow52WeekHigh: pctBelowReference(currentPrice, high52Week),
     };
   });
+}
+
+function buildAlertCandidates(rows, { minPctBelow = 20 } = {}) {
+  return rows
+    .filter((row) => Number.isFinite(row?.pctBelow52WeekHigh) && row.pctBelow52WeekHigh >= minPctBelow)
+    .sort((a, b) => b.pctBelow52WeekHigh - a.pctBelow52WeekHigh);
 }
 
 function computeMovers(historyRows, { sinceMs = null, limit = 20 } = {}) {
@@ -412,33 +426,21 @@ async function runPriceCheck({ reason = 'scheduled' } = {}) {
         market_time: result.marketTime || '',
       });
 
-      const change = previous ? pctChange(previous.price, result.price) : null;
       const refs = referenceByTicker.get(row.ticker)?.refs;
-      const twoDayPrice = Number.isFinite(refs?.twoBusinessDaysAgo?.price) ? refs.twoBusinessDaysAgo.price : null;
-      const twoDayChange = pctDiffFromReference(result.price, twoDayPrice);
+      const high52Week = Number.isFinite(refs?.high52Week) ? refs.high52Week : null;
+      const pctBelow52WeekHigh = pctBelowReference(result.price, high52Week);
 
-      const triggers = [];
-      if (change != null && Math.abs(change) >= runtimeConfig.alertThresholdPct) {
-        triggers.push(`single-check ${Math.abs(change).toFixed(2)}%`);
-      }
-      if (twoDayChange != null && Math.abs(twoDayChange) >= runtimeConfig.alert2DayThresholdPct) {
-        triggers.push(`2-day ${Math.abs(twoDayChange).toFixed(2)}%`);
-      }
-
-      if (triggers.length > 0) {
-        const thresholdUsed =
-          change != null && Math.abs(change) >= runtimeConfig.alertThresholdPct
-            ? runtimeConfig.alertThresholdPct
-            : runtimeConfig.alert2DayThresholdPct;
+      if (pctBelow52WeekHigh != null && pctBelow52WeekHigh >= runtimeConfig.alertBelow52WeekHighPct) {
+        const drawdownPct = Number(pctBelow52WeekHigh.toFixed(3));
 
         alertRows.push({
           timestamp,
           ticker: row.ticker,
-          old_price: Number.isFinite(previous?.price) ? previous.price : '',
+          old_price: high52Week,
           new_price: result.price,
-          change_pct: Number.isFinite(change) ? change.toFixed(3) : Number(twoDayChange || 0).toFixed(3),
-          threshold_pct: thresholdUsed,
-          reason: `${triggers.join(' + ')} threshold hit`,
+          change_pct: (-drawdownPct).toFixed(3),
+          threshold_pct: runtimeConfig.alertBelow52WeekHighPct,
+          reason: `${drawdownPct.toFixed(2)}% below 52-week high`,
         });
       }
 
@@ -506,8 +508,7 @@ app.get('/report', async (_req, res, next) => {
       showAlertsSection: true,
       config: {
         schedule: SCHEDULE_CRON,
-        threshold: runtimeConfig.alertThresholdPct,
-        threshold2Day: runtimeConfig.alert2DayThresholdPct,
+        alertBelow52WeekHighPct: runtimeConfig.alertBelow52WeekHighPct,
         whatsappDigestMode: WHATSAPP_DIGEST_MODE,
         sortBy,
         sortDir,
@@ -547,8 +548,7 @@ app.get('/index-report', async (_req, res, next) => {
       showAlertsSection: false,
       config: {
         schedule: SCHEDULE_CRON,
-        threshold: runtimeConfig.alertThresholdPct,
-        threshold2Day: runtimeConfig.alert2DayThresholdPct,
+        alertBelow52WeekHighPct: runtimeConfig.alertBelow52WeekHighPct,
         whatsappDigestMode: WHATSAPP_DIGEST_MODE,
         sortBy,
         sortDir,
@@ -567,6 +567,36 @@ app.get('/alerts', async (_req, res) => {
     count: alerts.length,
     alerts: alerts.slice(-200).reverse(),
   });
+});
+
+app.get('/alerts-page', async (_req, res, next) => {
+  try {
+    const tickers = await loadTickersFromCsv(TICKERS_CSV);
+    const forceRefresh = String(_req.query.refreshRefs || '0') === '1';
+    const forceRefreshReddit = String(_req.query.refreshReddit || '0') === '1';
+    const forceRefreshDesc = String(_req.query.refreshDesc || '0') === '1';
+
+    await refreshReferenceCache(tickers, { force: forceRefresh });
+    await refreshRedditInterestCache(tickers, { force: forceRefreshReddit });
+    await refreshDescriptionCache(tickers, { force: forceRefreshDesc });
+
+    const latestRows = buildReportRows(tickers, latestByTicker);
+    const candidates = buildAlertCandidates(latestRows, {
+      minPctBelow: runtimeConfig.alertBelow52WeekHighPct,
+    });
+    const alerts = await readCsv(ALERTS_CSV);
+
+    res.render('alerts', {
+      pageTitle: 'Alerts',
+      pageKey: 'alerts',
+      thresholdPct: runtimeConfig.alertBelow52WeekHighPct,
+      candidates,
+      alerts: alerts.slice(-200).reverse(),
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/movers', async (req, res, next) => {
@@ -593,8 +623,7 @@ app.get('/health', (_req, res) => {
     status: 'ok',
     now: new Date().toISOString(),
     schedule: SCHEDULE_CRON,
-    thresholdPct: runtimeConfig.alertThresholdPct,
-    threshold2DayPct: runtimeConfig.alert2DayThresholdPct,
+    alertBelow52WeekHighPct: runtimeConfig.alertBelow52WeekHighPct,
     redditInterest: {
       ...redditFetchStatus,
       cacheSize: redditInterestByTicker.size,
@@ -604,24 +633,18 @@ app.get('/health', (_req, res) => {
 });
 
 app.post('/config/thresholds', (req, res) => {
-  const nextSingle = Number(req.body?.thresholdPct);
-  const nextTwoDay = Number(req.body?.threshold2DayPct);
+  const nextThreshold = Number(req.body?.thresholdPct ?? req.body?.alertBelow52WeekHighPct);
 
-  if (!Number.isFinite(nextSingle) || nextSingle <= 0 || nextSingle > 100) {
+  if (!Number.isFinite(nextThreshold) || nextThreshold <= 0 || nextThreshold > 100) {
     return res.status(400).json({ error: 'thresholdPct must be a number between 0 and 100' });
   }
 
-  if (!Number.isFinite(nextTwoDay) || nextTwoDay <= 0 || nextTwoDay > 100) {
-    return res.status(400).json({ error: 'threshold2DayPct must be a number between 0 and 100' });
-  }
-
-  runtimeConfig.alertThresholdPct = Number(nextSingle.toFixed(3));
-  runtimeConfig.alert2DayThresholdPct = Number(nextTwoDay.toFixed(3));
+  runtimeConfig.alertBelow52WeekHighPct = Number(nextThreshold.toFixed(3));
 
   return res.json({
     ok: true,
-    thresholdPct: runtimeConfig.alertThresholdPct,
-    threshold2DayPct: runtimeConfig.alert2DayThresholdPct,
+    thresholdPct: runtimeConfig.alertBelow52WeekHighPct,
+    alertBelow52WeekHighPct: runtimeConfig.alertBelow52WeekHighPct,
   });
 });
 
