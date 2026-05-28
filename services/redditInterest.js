@@ -123,6 +123,9 @@ async function fetchRedditTickerInterest(tickers) {
   }
 
   const posts = [...uniquePosts.values()];
+  if (posts.length === 0) {
+    throw new Error('Reddit fetch returned no posts from configured subreddits');
+  }
 
   for (const post of posts) {
     const text = `${post.title || ''}\n${post.selftext || ''}`;
