@@ -20,6 +20,8 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const SCHEDULE_CRON = process.env.SCHEDULE_CRON || '*/15 * * * *';
 const ALERT_BELOW_52WEEK_HIGH_PCT = Number(process.env.ALERT_BELOW_52WEEK_HIGH_PCT || 20);
+const ALERT_1DAY_DROP_PCT = Number(process.env.ALERT_1DAY_DROP_PCT || 2);
+const ALERT_2DAY_DROP_PCT = Number(process.env.ALERT_2DAY_DROP_PCT || 3);
 const ALERT_MIN_MARKET_CAP = Number(process.env.ALERT_MIN_MARKET_CAP || 2000000000);
 const WHATSAPP_DIGEST_MODE = (process.env.WHATSAPP_DIGEST_MODE || 'single').toLowerCase();
 const TZ = process.env.TZ;
@@ -41,6 +43,8 @@ const marketCapByTicker = new Map();
 const whatsapp = createWhatsAppSender();
 const runtimeConfig = {
   alertBelow52WeekHighPct: Number.isFinite(ALERT_BELOW_52WEEK_HIGH_PCT) ? ALERT_BELOW_52WEEK_HIGH_PCT : 20,
+  alert1DayDropPct: Number.isFinite(ALERT_1DAY_DROP_PCT) && ALERT_1DAY_DROP_PCT > 0 ? ALERT_1DAY_DROP_PCT : 2,
+  alert2DayDropPct: Number.isFinite(ALERT_2DAY_DROP_PCT) && ALERT_2DAY_DROP_PCT > 0 ? ALERT_2DAY_DROP_PCT : 3,
   alertMinMarketCap: Number.isFinite(ALERT_MIN_MARKET_CAP) && ALERT_MIN_MARKET_CAP > 0 ? ALERT_MIN_MARKET_CAP : 2000000000,
 };
 let lastRun = {
@@ -330,6 +334,7 @@ function buildReportRows(tickers, latestMap) {
     const reddit = redditInterestByTicker.get(ticker)?.value;
     const currentPrice = latest?.price;
     const oneDayPrice = Number.isFinite(refs?.oneBusinessDayAgo?.price) ? refs.oneBusinessDayAgo.price : null;
+    const twoDayPrice = Number.isFinite(refs?.twoBusinessDaysAgo?.price) ? refs.twoBusinessDaysAgo.price : null;
     const oneMonthPrice = Number.isFinite(refs?.oneMonthAgo?.price) ? refs.oneMonthAgo.price : null;
     const oneYearPrice = Number.isFinite(refs?.oneYearAgo?.price) ? refs.oneYearAgo.price : null;
     const high52Week = Number.isFinite(refs?.high52Week) ? refs.high52Week : null;
@@ -345,6 +350,8 @@ function buildReportRows(tickers, latestMap) {
       redditPostsScanned: Number.isFinite(reddit?.postsScanned) ? reddit.postsScanned : null,
       oneBusinessDayAgoPrice: oneDayPrice,
       oneBusinessDayAgoDate: refs?.oneBusinessDayAgo?.date || '',
+      twoBusinessDaysAgoPrice: twoDayPrice,
+      twoBusinessDaysAgoDate: refs?.twoBusinessDaysAgo?.date || '',
       oneMonthAgoPrice: oneMonthPrice,
       oneMonthAgoDate: refs?.oneMonthAgo?.date || '',
       oneYearAgoPrice: oneYearPrice,
@@ -352,6 +359,7 @@ function buildReportRows(tickers, latestMap) {
       high52Week,
       marketCap,
       pctVsOneBusinessDayAgo: pctDiffFromReference(currentPrice, oneDayPrice),
+      pctVsTwoBusinessDaysAgo: pctDiffFromReference(currentPrice, twoDayPrice),
       pctVsOneMonthAgo: pctDiffFromReference(currentPrice, oneMonthPrice),
       pctVsOneYearAgo: pctDiffFromReference(currentPrice, oneYearPrice),
       pctBelow52WeekHigh: pctBelowReference(currentPrice, high52Week),
@@ -359,14 +367,24 @@ function buildReportRows(tickers, latestMap) {
   });
 }
 
-function buildAlertCandidates(rows, { minPctBelow = 20, minMarketCap = 2000000000 } = {}) {
+function passesDropGate(row, { oneDayDropPct = 2, twoDayDropPct = 3 } = {}) {
+  const oneDayHit = Number.isFinite(row?.pctVsOneBusinessDayAgo) && row.pctVsOneBusinessDayAgo <= -Math.abs(oneDayDropPct);
+  const twoDayHit = Number.isFinite(row?.pctVsTwoBusinessDaysAgo) && row.pctVsTwoBusinessDaysAgo <= -Math.abs(twoDayDropPct);
+  return oneDayHit || twoDayHit;
+}
+
+function buildAlertCandidates(
+  rows,
+  { minPctBelow = 20, minMarketCap = 2000000000, oneDayDropPct = 2, twoDayDropPct = 3 } = {}
+) {
   return rows
     .filter(
       (row) =>
         Number.isFinite(row?.pctBelow52WeekHigh) &&
         row.pctBelow52WeekHigh >= minPctBelow &&
         Number.isFinite(row?.marketCap) &&
-        row.marketCap >= minMarketCap
+        row.marketCap >= minMarketCap &&
+        passesDropGate(row, { oneDayDropPct, twoDayDropPct })
     )
     .sort((a, b) => b.pctBelow52WeekHigh - a.pctBelow52WeekHigh);
 }
@@ -661,20 +679,26 @@ app.get('/alerts-page', async (_req, res, next) => {
     const candidates = buildAlertCandidates(latestRows, {
       minPctBelow: runtimeConfig.alertBelow52WeekHighPct,
       minMarketCap: runtimeConfig.alertMinMarketCap,
+      oneDayDropPct: runtimeConfig.alert1DayDropPct,
+      twoDayDropPct: runtimeConfig.alert2DayDropPct,
     });
     const alerts = await readCsv(ALERTS_CSV);
     const filteredAlerts = filterAlertsByMarketCap(alerts, { minMarketCap: runtimeConfig.alertMinMarketCap })
       .slice(-200)
       .reverse();
+    const candidateTickers = new Set(candidates.map((row) => row.ticker));
+    const visibleAlerts = filteredAlerts.filter((alert) => candidateTickers.has(alert.ticker));
 
     res.render('alerts', {
       pageTitle: 'Alerts',
       pageKey: 'alerts',
       thresholdPct: runtimeConfig.alertBelow52WeekHighPct,
+      oneDayDropPct: runtimeConfig.alert1DayDropPct,
+      twoDayDropPct: runtimeConfig.alert2DayDropPct,
       minMarketCap: runtimeConfig.alertMinMarketCap,
       candidates,
       descriptionMap,
-      alerts: filteredAlerts,
+      alerts: visibleAlerts,
       generatedAt: new Date().toISOString(),
     });
   } catch (error) {
@@ -707,6 +731,8 @@ app.get('/health', (_req, res) => {
     now: new Date().toISOString(),
     schedule: SCHEDULE_CRON,
     alertBelow52WeekHighPct: runtimeConfig.alertBelow52WeekHighPct,
+    alert1DayDropPct: runtimeConfig.alert1DayDropPct,
+    alert2DayDropPct: runtimeConfig.alert2DayDropPct,
     alertMinMarketCap: runtimeConfig.alertMinMarketCap,
     redditInterest: {
       ...redditFetchStatus,
@@ -718,17 +744,31 @@ app.get('/health', (_req, res) => {
 
 app.post('/config/thresholds', (req, res) => {
   const nextThreshold = Number(req.body?.thresholdPct ?? req.body?.alertBelow52WeekHighPct);
+  const next1DayDrop = Number(req.body?.alert1DayDropPct ?? req.body?.threshold1DayPct ?? runtimeConfig.alert1DayDropPct);
+  const next2DayDrop = Number(req.body?.alert2DayDropPct ?? req.body?.threshold2DayPct ?? runtimeConfig.alert2DayDropPct);
 
   if (!Number.isFinite(nextThreshold) || nextThreshold <= 0 || nextThreshold > 100) {
     return res.status(400).json({ error: 'thresholdPct must be a number between 0 and 100' });
   }
 
+  if (!Number.isFinite(next1DayDrop) || next1DayDrop <= 0 || next1DayDrop > 100) {
+    return res.status(400).json({ error: 'alert1DayDropPct must be a number between 0 and 100' });
+  }
+
+  if (!Number.isFinite(next2DayDrop) || next2DayDrop <= 0 || next2DayDrop > 100) {
+    return res.status(400).json({ error: 'alert2DayDropPct must be a number between 0 and 100' });
+  }
+
   runtimeConfig.alertBelow52WeekHighPct = Number(nextThreshold.toFixed(3));
+  runtimeConfig.alert1DayDropPct = Number(next1DayDrop.toFixed(3));
+  runtimeConfig.alert2DayDropPct = Number(next2DayDrop.toFixed(3));
 
   return res.json({
     ok: true,
     thresholdPct: runtimeConfig.alertBelow52WeekHighPct,
     alertBelow52WeekHighPct: runtimeConfig.alertBelow52WeekHighPct,
+    alert1DayDropPct: runtimeConfig.alert1DayDropPct,
+    alert2DayDropPct: runtimeConfig.alert2DayDropPct,
   });
 });
 

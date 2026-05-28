@@ -27,7 +27,24 @@
         </div>
         <div class="hero-meta">
           <p><strong>Rule:</strong> current price <= <%= (100 - thresholdPct).toFixed(0) %>% of 52-week high</p>
+          <p><strong>Drop Gate:</strong> 1D <= -<%= Number(oneDayDropPct).toFixed(1) %>% OR 2D <= -<%= Number(twoDayDropPct).toFixed(1) %>%</p>
           <p><strong>Min Market Cap:</strong> $<%= (Number(minMarketCap || 0) / 1000000000).toFixed(1) %>B</p>
+          <form id="thresholdForm" class="filters" action="#">
+            <label>
+              52W Gap %
+              <input id="thresholdPctInput" type="number" min="0.1" max="100" step="0.1" value="<%= thresholdPct %>" />
+            </label>
+            <label>
+              1D Drop %
+              <input id="threshold1DayInput" type="number" min="0.1" max="100" step="0.1" value="<%= oneDayDropPct %>" />
+            </label>
+            <label>
+              2D Drop %
+              <input id="threshold2DayInput" type="number" min="0.1" max="100" step="0.1" value="<%= twoDayDropPct %>" />
+            </label>
+            <button id="saveThresholdsBtn" type="submit">Save Rules</button>
+          </form>
+          <p id="thresholdStatus" class="muted"></p>
           <p><strong>Generated:</strong> <%= generatedAt %></p>
         </div>
       </header>
@@ -43,6 +60,8 @@
                 <th>Current Price</th>
                 <th>52W High</th>
                 <th>Below 52W High %</th>
+                <th>Today vs 1D</th>
+                <th>Today vs 2D</th>
                 <th>Reddit Interest</th>
                 <th>Last Quote Time</th>
               </tr>
@@ -50,7 +69,7 @@
             <tbody>
               <% if (candidates.length === 0) { %>
               <tr>
-                <td colspan="7">No stocks currently match the 52-week-high drawdown rule.</td>
+                <td colspan="9">No stocks currently match the combined 52-week, market-cap, and drop-gate rules.</td>
               </tr>
               <% } %>
               <% candidates.forEach((row) => { %>
@@ -60,6 +79,8 @@
                 <td><%= fmtPrice(row.price) %></td>
                 <td><%= fmtPrice(row.high52Week) %></td>
                 <td class="down"><%= fmtPct(-row.pctBelow52WeekHigh) %></td>
+                <td class="<%= Number.isFinite(row.pctVsOneBusinessDayAgo) && row.pctVsOneBusinessDayAgo <= -Number(oneDayDropPct) ? 'down' : '' %>"><%= fmtPct(row.pctVsOneBusinessDayAgo) %></td>
+                <td class="<%= Number.isFinite(row.pctVsTwoBusinessDaysAgo) && row.pctVsTwoBusinessDaysAgo <= -Number(twoDayDropPct) ? 'down' : '' %>"><%= fmtPct(row.pctVsTwoBusinessDaysAgo) %></td>
                 <td title="Posts scanned: <%= row.redditPostsScanned ?? 'n/a' %>"><%= Number.isFinite(row.redditMentions) ? row.redditMentions : 'n/a' %></td>
                 <td><%= row.timestamp || 'n/a' %></td>
               </tr>
@@ -106,5 +127,52 @@
         </div>
       </section>
     </main>
+    <script>
+      const thresholdForm = document.getElementById('thresholdForm');
+      const thresholdStatus = document.getElementById('thresholdStatus');
+
+      if (thresholdForm) {
+        thresholdForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+
+          const saveBtn = document.getElementById('saveThresholdsBtn');
+          const thresholdPctInput = document.getElementById('thresholdPctInput');
+          const threshold1DayInput = document.getElementById('threshold1DayInput');
+          const threshold2DayInput = document.getElementById('threshold2DayInput');
+
+          const payload = {
+            thresholdPct: Number(thresholdPctInput.value),
+            alert1DayDropPct: Number(threshold1DayInput.value),
+            alert2DayDropPct: Number(threshold2DayInput.value),
+          };
+
+          saveBtn.disabled = true;
+          const previousText = saveBtn.textContent;
+          saveBtn.textContent = 'Saving...';
+          thresholdStatus.textContent = '';
+
+          try {
+            const res = await fetch('/config/thresholds', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({ error: 'Failed to save alert rules' }));
+              throw new Error(err.error || 'Failed to save alert rules');
+            }
+
+            thresholdStatus.textContent = 'Alert rules updated.';
+            setTimeout(() => location.reload(), 500);
+          } catch (error) {
+            thresholdStatus.textContent = error.message;
+          } finally {
+            saveBtn.disabled = false;
+            saveBtn.textContent = previousText;
+          }
+        });
+      }
+    </script>
   </body>
 </html>
