@@ -234,8 +234,14 @@ async function refreshMarketCapCache(tickers, { force = false } = {}) {
     return;
   }
 
+  let marketCapMap = new Map();
+  try {
+    marketCapMap = await fetchBatchTickerMarketCaps(missingRows.map((row) => row.yahooSymbol));
+  } catch {
+    // Keep running with existing cache values if provider response is malformed.
+  }
+
   const symbolToTicker = new Map(missingRows.map((row) => [row.yahooSymbol, row.ticker]));
-  const marketCapMap = await fetchBatchTickerMarketCaps(missingRows.map((row) => row.yahooSymbol));
 
   for (const row of missingRows) {
     marketCapByTicker.set(row.ticker, {

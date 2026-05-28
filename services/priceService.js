@@ -353,29 +353,33 @@ async function fetchBatchTickerMarketCaps(yahooSymbols) {
   for (let i = 0; i < concurrency; i += 1) {
     workers.push(
       (async () => {
-        while (queue.length > 0) {
-          const symbol = queue.shift();
-          if (!symbol) {
-            continue;
-          }
-
-          try {
-            const quote = await yahooFinance.quote(symbol);
-            const marketCap = Number(quote?.marketCap);
-            if (Number.isFinite(marketCap) && marketCap > 0) {
-              out.set(String(symbol).toUpperCase(), marketCap);
+        try {
+          while (queue.length > 0) {
+            const symbol = queue.shift();
+            if (!symbol) {
+              continue;
             }
-          } catch {
-            // Best effort only.
-          }
 
-          await sleep(120);
+            try {
+              const quote = await yahooFinance.quote(symbol);
+              const marketCap = Number(quote?.marketCap);
+              if (Number.isFinite(marketCap) && marketCap > 0) {
+                out.set(String(symbol).toUpperCase(), marketCap);
+              }
+            } catch {
+              // Best effort only.
+            }
+
+            await sleep(120);
+          }
+        } catch {
+          // Guard against unexpected worker-level failures so startup never fails.
         }
       })()
     );
   }
 
-  await Promise.all(workers);
+  await Promise.allSettled(workers);
 
   return out;
 }
