@@ -1,7 +1,19 @@
 const { default: YahooFinance } = require('yahoo-finance2');
 
+const quietYahooLogger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {},
+  dir: () => {},
+};
+
 const yahooFinance = new YahooFinance({
   suppressNotices: ['yahooSurvey'],
+  validation: {
+    logErrors: false,
+  },
+  logger: quietYahooLogger,
 });
 
 function sleep(ms) {
