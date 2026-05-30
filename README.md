@@ -33,6 +33,7 @@ Tickers are read from `tickers.csv`. The parser accepts commas/newlines and igno
 ## API/Pages
 - `GET /report` - HTML report with latest prices and recent alerts
 	- Add `?refreshRefs=1` to force-refresh historical reference prices
+- `GET /index-charts` - YTD chart page for S&P 500, FTSE 100, DAX, EURO STOXX 50, CAC 40, and Nikkei 225
 - `POST /config/thresholds` - Update runtime alert thresholds from UI (`thresholdPct`, `threshold2DayPct`)
 - `GET /movers` - HTML page for biggest movers over a selectable time window
 - `POST /run-check` - Trigger manual check immediately

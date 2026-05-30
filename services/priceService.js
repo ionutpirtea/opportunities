@@ -396,9 +396,167 @@ async function fetchBatchTickerMarketCaps(yahooSymbols) {
   return out;
 }
 
+function getOperatingCashFlowFromStatement(statement) {
+  if (!statement || typeof statement !== 'object') {
+    return null;
+  }
+
+  const rawOperatingCashflow = statement?.operatingCashflow?.raw;
+  if (Number.isFinite(rawOperatingCashflow)) {
+    return Number(rawOperatingCashflow);
+  }
+
+  const rawTotalCashFromOps = statement?.totalCashFromOperatingActivities?.raw;
+  if (Number.isFinite(rawTotalCashFromOps)) {
+    return Number(rawTotalCashFromOps);
+  }
+
+  return null;
+}
+
+async function fetchTickerRecentQuarterlyOperatingCashFlow(yahooSymbol) {
+  const summary = await yahooFinance.quoteSummary(yahooSymbol, {
+    modules: ['cashflowStatementHistoryQuarterly'],
+  });
+
+  const statements = Array.isArray(summary?.cashflowStatementHistoryQuarterly?.cashflowStatements)
+    ? summary.cashflowStatementHistoryQuarterly.cashflowStatements
+    : [];
+
+  const values = [];
+  for (const statement of statements) {
+    const value = getOperatingCashFlowFromStatement(statement);
+    if (Number.isFinite(value)) {
+      values.push(value);
+    }
+    if (values.length >= 2) {
+      break;
+    }
+  }
+
+  return {
+    lastTwoOperatingCashFlow: values,
+    hasTwoQuarters: values.length >= 2,
+    bothNegative: values.length >= 2 && values[0] < 0 && values[1] < 0,
+  };
+}
+
+async function fetchBatchTickerRecentQuarterlyOperatingCashFlow(yahooSymbols) {
+  if (!Array.isArray(yahooSymbols) || yahooSymbols.length === 0) {
+    return new Map();
+  }
+
+  const out = new Map();
+  const queue = [...new Set(yahooSymbols.filter(Boolean))];
+  const workers = [];
+  const concurrency = 4;
+
+  for (let i = 0; i < concurrency; i += 1) {
+    workers.push(
+      (async () => {
+        while (queue.length > 0) {
+          const symbol = queue.shift();
+          if (!symbol) {
+            continue;
+          }
+
+          try {
+            const cashFlowState = await fetchTickerRecentQuarterlyOperatingCashFlow(symbol);
+            out.set(String(symbol).toUpperCase(), cashFlowState);
+          } catch {
+            // Best effort only.
+          }
+
+          await sleep(120);
+        }
+      })()
+    );
+  }
+
+  await Promise.allSettled(workers);
+  return out;
+}
+
+async function fetchIndexYtdSeries(yahooSymbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
+    yahooSymbol
+  )}?range=ytd&interval=1d`;
+
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0',
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Yahoo YTD request failed: ${response.status} ${response.statusText}`);
+  }
+
+  const payload = await response.json();
+  const result = payload?.chart?.result?.[0];
+  const timestamps = Array.isArray(result?.timestamp) ? result.timestamp : [];
+  const closes = Array.isArray(result?.indicators?.quote?.[0]?.close) ? result.indicators.quote[0].close : [];
+
+  const points = [];
+  for (let i = 0; i < timestamps.length; i += 1) {
+    const ts = timestamps[i];
+    const close = closes[i];
+    if (typeof ts !== 'number' || !Number.isFinite(close)) {
+      continue;
+    }
+
+    const date = new Date(ts * 1000).toISOString().slice(0, 10);
+    points.push({ date, close: Number(close) });
+  }
+
+  return {
+    currency: result?.meta?.currency || 'N/A',
+    points,
+  };
+}
+
+async function fetchBatchIndexYtdSeries(yahooSymbols) {
+  if (!Array.isArray(yahooSymbols) || yahooSymbols.length === 0) {
+    return new Map();
+  }
+
+  const out = new Map();
+  const queue = [...new Set(yahooSymbols.filter(Boolean))];
+  const workers = [];
+  const concurrency = 3;
+
+  for (let i = 0; i < concurrency; i += 1) {
+    workers.push(
+      (async () => {
+        while (queue.length > 0) {
+          const symbol = queue.shift();
+          if (!symbol) {
+            continue;
+          }
+
+          try {
+            const series = await fetchIndexYtdSeries(symbol);
+            out.set(symbol, series);
+          } catch {
+            // Best effort only.
+          }
+
+          await sleep(150);
+        }
+      })()
+    );
+  }
+
+  await Promise.all(workers);
+  return out;
+}
+
 module.exports = {
   fetchBatchTickerPrices,
   fetchBatchReferencePrices,
   fetchBatchTickerDescriptions,
   fetchBatchTickerMarketCaps,
+  fetchBatchIndexYtdSeries,
+  fetchBatchTickerRecentQuarterlyOperatingCashFlow,
 };

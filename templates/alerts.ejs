@@ -16,6 +16,7 @@
       <nav class="top-nav">
         <a href="/report">Stock Report</a>
         <a href="/index-report">Index Report</a>
+        <a href="/index-charts">Index Charts</a>
         <a href="/alerts-page" class="active">Alerts</a>
         <a href="/movers">Biggest Movers</a>
       </nav>
@@ -24,6 +25,7 @@
         <div>
           <h1>Alerts</h1>
           <p>Stocks currently at least <strong><%= thresholdPct %>%</strong> below their 52-week high.</p>
+          <p class="muted">Companies with negative operating cash flow in either of the last two quarters are excluded.</p>
         </div>
         <div class="hero-meta">
           <p><strong>Rule:</strong> current price <= <%= (100 - thresholdPct).toFixed(0) %>% of 52-week high</p>

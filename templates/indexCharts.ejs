@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title><%= pageTitle %></title>
+    <link rel="stylesheet" href="/public/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <% 
+      const hasNumericValue = (value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+      const fmtLevel = (value) => (hasNumericValue(value) ? Number(value).toFixed(2) : 'n/a');
+      const fmtPct = (value) => (hasNumericValue(value) ? `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%` : 'n/a');
+    %>
+    <main class="page">
+      <nav class="top-nav">
+        <a href="/report">Stock Report</a>
+        <a href="/index-report">Index Report</a>
+        <a href="/index-charts" class="active">Index Charts</a>
+        <a href="/alerts-page">Alerts</a>
+        <a href="/movers">Biggest Movers</a>
+      </nav>
+
+      <header class="hero">
+        <div>
+          <h1>Index Charts</h1>
+          <p>Year-to-date normalized performance (start of year = 100) for major global indices.</p>
+        </div>
+        <div class="hero-meta">
+          <p><strong>Window:</strong> Year to date</p>
+          <p><strong>Indices:</strong> S&P 500, FTSE 100, DAX, EURO STOXX 50, CAC 40, Nikkei 225</p>
+          <p><strong>Chart Mode:</strong> Normalized (Start = 100)</p>
+          <p><strong>Generated:</strong> <%= generatedAt %></p>
+        </div>
+      </header>
+
+      <section class="index-chart-grid">
+        <% rows.forEach((row) => { %>
+        <article class="index-chart-card">
+          <header class="index-chart-head">
+            <div>
+              <h2><%= row.name %></h2>
+              <p class="muted"><%= row.yahooSymbol %> | <%= row.currency %></p>
+            </div>
+            <div class="index-metrics">
+              <p><span>Start</span><strong><%= fmtLevel(row.startValue) %></strong></p>
+              <p><span>Latest</span><strong><%= fmtLevel(row.latestValue) %></strong></p>
+              <p>
+                <span>YTD</span>
+                <strong class="<%= Number.isFinite(row.ytdChangePct) ? (row.ytdChangePct >= 0 ? 'up' : 'down') : '' %>"><%= fmtPct(row.ytdChangePct) %></strong>
+              </p>
+            </div>
+          </header>
+
+          <% if (row.points.length > 1) { %>
+          <canvas class="index-canvas" id="chart-<%= row.key %>" aria-label="<%= row.name %> YTD chart"></canvas>
+          <p class="muted">From <%= row.startDate || 'n/a' %> to <%= row.latestDate || 'n/a' %></p>
+          <% } else { %>
+          <p class="muted">Not enough data points returned for this index.</p>
+          <% } %>
+        </article>
+        <% }) %>
+      </section>
+    </main>
+
+    <script>
+      const rows = <%- JSON.stringify(rows) %>;
+
+      rows.forEach((row) => {
+        if (!row || !Array.isArray(row.points) || row.points.length < 2) {
+          return;
+        }
+
+        const canvas = document.getElementById(`chart-${row.key}`);
+        if (!canvas) {
+          return;
+        }
+
+        const labels = row.points.map((point) => point.date);
+        const values = row.points.map((point) => point.close);
+        const first = values[0];
+        const normalizedValues = Number.isFinite(first) && first !== 0
+          ? values.map((value) => (value / first) * 100)
+          : values.map(() => null);
+        const stroke = Number.isFinite(row.ytdChangePct) && row.ytdChangePct < 0 ? '#b91c1c' : '#0f766e';
+
+        const chart = new Chart(canvas.getContext('2d'), {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              {
+                label: `${row.name} normalized`,
+                data: normalizedValues,
+                borderColor: stroke,
+                backgroundColor: `${stroke}22`,
+                borderWidth: 2,
+                fill: true,
+                pointRadius: 0,
+                tension: 0.15,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              mode: 'index',
+              intersect: false,
+            },
+            plugins: {
+              legend: {
+                display: false,
+              },
+            },
+            scales: {
+              x: {
+                ticks: {
+                  maxTicksLimit: 8,
+                },
+                grid: {
+                  display: false,
+                },
+              },
+              y: {
+                ticks: {
+                  callback: (value) => `${Number(value).toFixed(1)}`,
+                },
+                grid: {
+                  color: '#e7e0d2',
+                },
+              },
+            },
+          },
+        });
+      });
+    </script>
+  </body>
+</html>

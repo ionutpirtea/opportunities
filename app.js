@@ -10,6 +10,8 @@ const {
   fetchBatchReferencePrices,
   fetchBatchTickerDescriptions,
   fetchBatchTickerMarketCaps,
+  fetchBatchIndexYtdSeries,
+  fetchBatchTickerRecentQuarterlyOperatingCashFlow,
 } = require('./services/priceService');
 const { ensureCsv, appendCsvRows, readCsv } = require('./services/storage');
 const { createWhatsAppSender } = require('./services/whatsappAlert');
@@ -34,12 +36,21 @@ const ALERTS_CSV = path.join(ROOT, 'data', 'alerts.csv');
 
 const HISTORY_HEADERS = ['timestamp', 'ticker', 'yahoo_symbol', 'price', 'currency', 'market_time'];
 const ALERT_HEADERS = ['timestamp', 'ticker', 'old_price', 'new_price', 'change_pct', 'threshold_pct', 'reason'];
+const MAJOR_INDICES = [
+  { key: 'sp500', name: 'S&P 500', yahooSymbol: '^GSPC' },
+  { key: 'ftse100', name: 'FTSE 100', yahooSymbol: '^FTSE' },
+  { key: 'dax', name: 'DAX', yahooSymbol: '^GDAXI' },
+  { key: 'eurostoxx50', name: 'EURO STOXX 50', yahooSymbol: '^STOXX50E' },
+  { key: 'cac40', name: 'CAC 40', yahooSymbol: '^FCHI' },
+  { key: 'nikkei225', name: 'Nikkei 225', yahooSymbol: '^N225' },
+];
 
 const latestByTicker = new Map();
 const referenceByTicker = new Map();
 const redditInterestByTicker = new Map();
 const descriptionByTicker = new Map();
 const marketCapByTicker = new Map();
+const cashFlowByTicker = new Map();
 const whatsapp = createWhatsAppSender();
 const runtimeConfig = {
   alertBelow52WeekHighPct: Number.isFinite(ALERT_BELOW_52WEEK_HIGH_PCT) ? ALERT_BELOW_52WEEK_HIGH_PCT : 20,
@@ -261,6 +272,65 @@ async function refreshMarketCapCache(tickers, { force = false } = {}) {
       value: marketCap,
     });
   }
+}
+
+async function refreshCashFlowCache(tickers, { force = false } = {}) {
+  const successStaleMs = 24 * 60 * 60 * 1000;
+  const missingStaleMs = 3 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+  const missingRows = [];
+
+  for (const ticker of tickers) {
+    const cached = cashFlowByTicker.get(ticker);
+    const hasData = Array.isArray(cached?.value?.lastTwoOperatingCashFlow);
+    const ttl = hasData ? successStaleMs : missingStaleMs;
+    if (force || !cached || nowMs - cached.fetchedAtMs > ttl) {
+      missingRows.push({ ticker, yahooSymbol: toYahooSymbol(ticker) });
+    }
+  }
+
+  if (missingRows.length === 0) {
+    return;
+  }
+
+  let cashFlowMap = new Map();
+  try {
+    cashFlowMap = await fetchBatchTickerRecentQuarterlyOperatingCashFlow(
+      missingRows.map((row) => row.yahooSymbol)
+    );
+  } catch {
+    // Keep running with existing cache values if provider response is malformed.
+  }
+
+  const symbolToTicker = new Map(missingRows.map((row) => [row.yahooSymbol, row.ticker]));
+
+  for (const row of missingRows) {
+    cashFlowByTicker.set(row.ticker, {
+      fetchedAtMs: nowMs,
+      value: null,
+    });
+  }
+
+  for (const [symbol, value] of cashFlowMap.entries()) {
+    const ticker = symbolToTicker.get(symbol);
+    if (!ticker) {
+      continue;
+    }
+
+    cashFlowByTicker.set(ticker, {
+      fetchedAtMs: nowMs,
+      value,
+    });
+  }
+}
+
+function hasNegativeOperatingCashFlowInAnyOfLastTwoQuarters(ticker) {
+  const values = cashFlowByTicker.get(ticker)?.value?.lastTwoOperatingCashFlow;
+  if (!Array.isArray(values) || values.length < 2) {
+    return false;
+  }
+
+  return values[0] < 0 || values[1] < 0;
 }
 
 function parseTimestamp(value) {
@@ -657,6 +727,44 @@ app.get('/index-report', async (_req, res, next) => {
   }
 });
 
+app.get('/index-charts', async (_req, res, next) => {
+  try {
+    const symbolMap = await fetchBatchIndexYtdSeries(MAJOR_INDICES.map((idx) => idx.yahooSymbol));
+    const rows = MAJOR_INDICES.map((idx) => {
+      const series = symbolMap.get(idx.yahooSymbol);
+      const points = Array.isArray(series?.points) ? series.points : [];
+      const startPoint = points[0] || null;
+      const latestPoint = points[points.length - 1] || null;
+      const startValue = Number.isFinite(startPoint?.close) ? startPoint.close : null;
+      const latestValue = Number.isFinite(latestPoint?.close) ? latestPoint.close : null;
+      const pctChange =
+        Number.isFinite(startValue) && Number.isFinite(latestValue) && startValue !== 0
+          ? ((latestValue - startValue) / startValue) * 100
+          : null;
+
+      return {
+        ...idx,
+        currency: series?.currency || 'N/A',
+        points,
+        startDate: startPoint?.date || null,
+        latestDate: latestPoint?.date || null,
+        startValue,
+        latestValue,
+        ytdChangePct: pctChange,
+      };
+    });
+
+    res.render('indexCharts', {
+      pageTitle: 'Index Charts',
+      pageKey: 'index-charts',
+      rows,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get('/alerts', async (_req, res) => {
   const tickers = await loadTickersFromCsv(TICKERS_CSV);
   await refreshMarketCapCache(tickers, { force: false });
@@ -679,6 +787,7 @@ app.get('/alerts-page', async (_req, res, next) => {
     await refreshRedditInterestCache(tickers, { force: forceRefreshReddit });
     await refreshDescriptionCache(tickers, { force: forceRefreshDesc });
     await refreshMarketCapCache(tickers, { force: forceRefreshDesc });
+    await refreshCashFlowCache(tickers, { force: forceRefreshDesc });
 
     const latestRows = buildReportRows(tickers, latestByTicker);
     const descriptionMap = Object.fromEntries(latestRows.map((row) => [row.ticker, row.description || '']));
@@ -693,7 +802,17 @@ app.get('/alerts-page', async (_req, res, next) => {
       .slice(-200)
       .reverse();
     const candidateTickers = new Set(candidates.map((row) => row.ticker));
-    const visibleAlerts = filteredAlerts.filter((alert) => candidateTickers.has(alert.ticker));
+    const cashFlowEligibleTickers = new Set(
+      candidates
+        .filter((row) => !hasNegativeOperatingCashFlowInAnyOfLastTwoQuarters(row.ticker))
+        .map((row) => row.ticker)
+    );
+    const visibleAlerts = filteredAlerts.filter(
+      (alert) => candidateTickers.has(alert.ticker) && cashFlowEligibleTickers.has(alert.ticker)
+    );
+    const cashFlowFilteredCandidates = candidates.filter(
+      (row) => !hasNegativeOperatingCashFlowInAnyOfLastTwoQuarters(row.ticker)
+    );
 
     res.render('alerts', {
       pageTitle: 'Alerts',
@@ -702,7 +821,7 @@ app.get('/alerts-page', async (_req, res, next) => {
       oneDayDropPct: runtimeConfig.alert1DayDropPct,
       twoDayDropPct: runtimeConfig.alert2DayDropPct,
       minMarketCap: runtimeConfig.alertMinMarketCap,
-      candidates,
+      candidates: cashFlowFilteredCandidates,
       descriptionMap,
       alerts: visibleAlerts,
       generatedAt: new Date().toISOString(),
