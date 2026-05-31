@@ -101,3 +101,24 @@ Recipient management and testing:
 - Use the "Test Telegram Alert" button on Alerts Management page, or call `POST /telegram/test`.
 
 Delivery status appears in `/health` under `lastRun.telegram`.
+
+## VM Startup Script (Node + Nginx)
+For VM restarts or quick recoveries, use the included Linux script to start the app stack in order (Node first, then Nginx reload).
+
+On the VM:
+```bash
+cd ~/opportunities
+chmod +x scripts/start_stack.sh
+./scripts/start_stack.sh
+```
+
+What it does:
+- Installs dependencies if `node_modules` is missing
+- Stops old app process on port `3000`
+- Starts `node app.js` in background and waits for `/health`
+- Starts + reloads Nginx
+
+Optional custom app port:
+```bash
+APP_PORT=3000 ./scripts/start_stack.sh
+```
