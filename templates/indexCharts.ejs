@@ -19,6 +19,7 @@
         <a href="/index-report">Index Report</a>
         <a href="/index-charts" class="active">Index Charts</a>
         <a href="/alerts-page">Alerts</a>
+        <a href="/alerts-management">Alerts Management</a>
         <a href="/movers">Biggest Movers</a>
       </nav>
 
@@ -54,7 +55,9 @@
           </header>
 
           <% if (row.points.length > 1) { %>
-          <canvas class="index-canvas" id="chart-<%= row.key %>" aria-label="<%= row.name %> YTD chart"></canvas>
+          <div class="index-canvas-wrap">
+            <canvas class="index-canvas" id="chart-<%= row.key %>" aria-label="<%= row.name %> YTD chart"></canvas>
+          </div>
           <p class="muted">From <%= row.startDate || 'n/a' %> to <%= row.latestDate || 'n/a' %></p>
           <% } else { %>
           <p class="muted">Not enough data points returned for this index.</p>
@@ -66,6 +69,8 @@
 
     <script>
       const rows = <%- JSON.stringify(rows) %>;
+      const FIXED_Y_MIN = 85;
+      const FIXED_Y_MAX = 120;
 
       rows.forEach((row) => {
         if (!row || !Array.isArray(row.points) || row.points.length < 2) {
@@ -85,7 +90,7 @@
           : values.map(() => null);
         const stroke = Number.isFinite(row.ytdChangePct) && row.ytdChangePct < 0 ? '#b91c1c' : '#0f766e';
 
-        const chart = new Chart(canvas.getContext('2d'), {
+        new Chart(canvas.getContext('2d'), {
           type: 'line',
           data: {
             labels,
@@ -94,9 +99,8 @@
                 label: `${row.name} normalized`,
                 data: normalizedValues,
                 borderColor: stroke,
-                backgroundColor: `${stroke}22`,
                 borderWidth: 2,
-                fill: true,
+                fill: false,
                 pointRadius: 0,
                 tension: 0.15,
               },
@@ -105,6 +109,7 @@
           options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: false,
             interaction: {
               mode: 'index',
               intersect: false,
@@ -124,8 +129,11 @@
                 },
               },
               y: {
+                min: FIXED_Y_MIN,
+                max: FIXED_Y_MAX,
                 ticks: {
                   callback: (value) => `${Number(value).toFixed(1)}`,
+                  maxTicksLimit: 6,
                 },
                 grid: {
                   color: '#e7e0d2',

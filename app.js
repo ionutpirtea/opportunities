@@ -13,8 +13,9 @@ const {
   fetchBatchIndexYtdSeries,
   fetchBatchTickerRecentQuarterlyOperatingCashFlow,
 } = require('./services/priceService');
-const { ensureCsv, appendCsvRows, readCsv } = require('./services/storage');
+const { ensureCsv, appendCsvRows, overwriteCsvRows, readCsv } = require('./services/storage');
 const { createWhatsAppSender } = require('./services/whatsappAlert');
+const { createTelegramSender } = require('./services/telegramAlert');
 const { fetchRedditTickerInterest } = require('./services/redditInterest');
 
 const app = express();
@@ -33,9 +34,11 @@ const TICKERS_CSV = path.join(ROOT, 'tickers.csv');
 const INDICES_CSV = path.join(ROOT, 'indices.csv');
 const HISTORY_CSV = path.join(ROOT, 'data', 'price_history.csv');
 const ALERTS_CSV = path.join(ROOT, 'data', 'alerts.csv');
+const ALERT_RECIPIENTS_CSV = path.join(ROOT, 'data', 'alert_recipients.csv');
 
 const HISTORY_HEADERS = ['timestamp', 'ticker', 'yahoo_symbol', 'price', 'currency', 'market_time'];
 const ALERT_HEADERS = ['timestamp', 'ticker', 'old_price', 'new_price', 'change_pct', 'threshold_pct', 'reason'];
+const ALERT_RECIPIENT_HEADERS = ['recipient', 'enabled'];
 const MAJOR_INDICES = [
   { key: 'sp500', name: 'S&P 500', yahooSymbol: '^GSPC' },
   { key: 'ftse100', name: 'FTSE 100', yahooSymbol: '^FTSE' },
@@ -52,6 +55,7 @@ const descriptionByTicker = new Map();
 const marketCapByTicker = new Map();
 const cashFlowByTicker = new Map();
 const whatsapp = createWhatsAppSender();
+const telegram = createTelegramSender();
 const runtimeConfig = {
   alertBelow52WeekHighPct: Number.isFinite(ALERT_BELOW_52WEEK_HIGH_PCT) ? ALERT_BELOW_52WEEK_HIGH_PCT : 20,
   alert1DayDropPct: Number.isFinite(ALERT_1DAY_DROP_PCT) && ALERT_1DAY_DROP_PCT > 0 ? ALERT_1DAY_DROP_PCT : 2,
@@ -67,6 +71,7 @@ let lastRun = {
   alerts: 0,
   errors: [],
   whatsapp: { sent: 0, failed: 0, skipped: 0, reason: 'not-run' },
+  telegram: { sent: 0, failed: 0, skipped: 0, reason: 'not-run' },
 };
 let redditFetchStatus = {
   lastAttemptAt: null,
@@ -105,6 +110,81 @@ function pctBelowReference(current, referenceHigh) {
     return null;
   }
   return ((referenceHigh - current) / referenceHigh) * 100;
+}
+
+function normalizeTelegramRecipient(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  return raw;
+}
+
+function isValidTelegramRecipient(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  if (text.startsWith('+') || text.startsWith('00')) {
+    return false;
+  }
+
+  const isNumericChatId = /^-?\d{5,20}$/.test(text);
+  const isUsername = /^@[A-Za-z0-9_]{5,}$/.test(text);
+  return isNumericChatId || isUsername;
+}
+
+async function loadAlertRecipients() {
+  const rows = await readCsv(ALERT_RECIPIENTS_CSV);
+
+  const out = [];
+  for (const row of rows) {
+    // Legacy compatibility with old CSV schema that only had "phone".
+    const value = normalizeTelegramRecipient(row.recipient || row.phone || '');
+    if (!isValidTelegramRecipient(value)) {
+      continue;
+    }
+
+    const enabledText = String(row.enabled ?? 'true').trim().toLowerCase();
+    const enabled = enabledText !== 'false' && enabledText !== '0' && enabledText !== 'no';
+    out.push({ recipient: value, enabled });
+  }
+
+  const deduped = new Map();
+  for (const entry of out) {
+    if (!deduped.has(entry.recipient)) {
+      deduped.set(entry.recipient, entry);
+    }
+  }
+
+  return [...deduped.values()];
+}
+
+async function saveAlertRecipients(recipients) {
+  const uniqueMap = new Map();
+  for (const entry of Array.isArray(recipients) ? recipients : []) {
+    const recipient = normalizeTelegramRecipient(entry?.recipient || entry || '');
+    if (!isValidTelegramRecipient(recipient)) {
+      continue;
+    }
+
+    uniqueMap.set(recipient, {
+      recipient,
+      enabled: entry?.enabled === false ? false : true,
+    });
+  }
+
+  const unique = [...uniqueMap.values()];
+  await overwriteCsvRows(
+    ALERT_RECIPIENTS_CSV,
+    ALERT_RECIPIENT_HEADERS,
+    unique.map((entry) => ({
+      recipient: entry.recipient,
+      enabled: entry.enabled ? 'true' : 'false',
+    }))
+  );
 }
 
 async function refreshReferenceCache(tickers, { force = false } = {}) {
@@ -541,6 +621,8 @@ async function runPriceCheck({ reason = 'scheduled' } = {}) {
   const tickers = await loadTickersFromCsv(TICKERS_CSV);
   await refreshReferenceCache(tickers, { force: false });
   await refreshMarketCapCache(tickers, { force: false });
+  await refreshDescriptionCache(tickers, { force: false });
+  await refreshCashFlowCache(tickers, { force: false });
 
   const historyRows = [];
   const alertRows = [];
@@ -617,10 +699,24 @@ async function runPriceCheck({ reason = 'scheduled' } = {}) {
   await appendCsvRows(HISTORY_CSV, HISTORY_HEADERS, historyRows);
   await appendCsvRows(ALERTS_CSV, ALERT_HEADERS, alertRows);
 
-  let whatsappResult = { sent: 0, failed: 0, skipped: 0, reason: 'no-alerts' };
-  if (alertRows.length > 0) {
-    whatsappResult = await whatsapp.sendAlerts(alertRows);
-  }
+  // WhatsApp is intentionally not used for automated broadcasts anymore.
+  const whatsappResult = { sent: 0, failed: 0, skipped: 0, reason: 'disabled' };
+
+  const latestRows = buildReportRows(tickers, latestByTicker);
+  const alertsPageCandidates = buildAlertCandidates(latestRows, {
+    minPctBelow: runtimeConfig.alertBelow52WeekHighPct,
+    minMarketCap: runtimeConfig.alertMinMarketCap,
+    oneDayDropPct: runtimeConfig.alert1DayDropPct,
+    twoDayDropPct: runtimeConfig.alert2DayDropPct,
+  }).filter((row) => !hasNegativeOperatingCashFlowInAnyOfLastTwoQuarters(row.ticker));
+
+  const managedRecipients = await loadAlertRecipients();
+  const enabledTelegramRecipients = managedRecipients.filter((entry) => entry.enabled).map((entry) => entry.recipient);
+
+  const telegramResult = await telegram.sendCandidates(alertsPageCandidates, {
+    checkTimestamp: new Date().toISOString(),
+    recipients: enabledTelegramRecipients,
+  });
 
   const finishedAt = new Date();
   lastRun = {
@@ -633,6 +729,7 @@ async function runPriceCheck({ reason = 'scheduled' } = {}) {
     errors,
     reason,
     whatsapp: whatsappResult,
+    telegram: telegramResult,
   };
 
   return lastRun;
@@ -678,6 +775,7 @@ app.get('/report', async (_req, res, next) => {
         sortBy,
         sortDir,
         reportPath: '/report',
+        pageKey: 'stocks',
       },
       generatedAt: new Date().toISOString(),
     });
@@ -719,6 +817,7 @@ app.get('/index-report', async (_req, res, next) => {
         sortBy,
         sortDir,
         reportPath: '/index-report',
+        pageKey: 'indices',
       },
       generatedAt: new Date().toISOString(),
     });
@@ -831,6 +930,94 @@ app.get('/alerts-page', async (_req, res, next) => {
   }
 });
 
+app.get('/alerts-management', async (_req, res, next) => {
+  try {
+    const recipients = await loadAlertRecipients();
+
+    res.render('alertsManagement', {
+      pageTitle: 'Alerts Management',
+      pageKey: 'alerts-management',
+      recipients,
+      thresholdPct: runtimeConfig.alertBelow52WeekHighPct,
+      oneDayDropPct: runtimeConfig.alert1DayDropPct,
+      twoDayDropPct: runtimeConfig.alert2DayDropPct,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/alerts-recipients', async (_req, res, next) => {
+  try {
+    const recipients = await loadAlertRecipients();
+    return res.json({ recipients });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/alerts-recipients', async (req, res, next) => {
+  try {
+    const normalized = normalizeTelegramRecipient(req.body?.recipient || req.body?.phone || '');
+    if (!isValidTelegramRecipient(normalized)) {
+      return res.status(400).json({ error: 'recipient must be Telegram chat id (e.g. -123456789) or username (e.g. @my_channel)' });
+    }
+
+    const recipients = await loadAlertRecipients();
+    const exists = recipients.some((row) => row.recipient === normalized);
+    if (!exists) {
+      recipients.push({ recipient: normalized, enabled: true });
+      await saveAlertRecipients(recipients);
+    }
+
+    return res.json({ ok: true, recipients: await loadAlertRecipients() });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/alerts-recipients/remove', async (req, res, next) => {
+  try {
+    const normalized = normalizeTelegramRecipient(req.body?.recipient || req.body?.phone || '');
+    if (!normalized) {
+      return res.status(400).json({ error: 'recipient is required' });
+    }
+
+    const recipients = await loadAlertRecipients();
+    const nextRecipients = recipients.filter((row) => row.recipient !== normalized);
+    await saveAlertRecipients(nextRecipients);
+
+    return res.json({ ok: true, recipients: nextRecipients });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/alerts-recipients/toggle', async (req, res, next) => {
+  try {
+    const normalized = normalizeTelegramRecipient(req.body?.recipient || '');
+    const enabled = req.body?.enabled !== false;
+
+    if (!normalized) {
+      return res.status(400).json({ error: 'recipient is required' });
+    }
+
+    const recipients = await loadAlertRecipients();
+    const nextRecipients = recipients.map((row) => {
+      if (row.recipient !== normalized) {
+        return row;
+      }
+      return { ...row, enabled };
+    });
+
+    await saveAlertRecipients(nextRecipients);
+    return res.json({ ok: true, recipients: nextRecipients });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 app.get('/movers', async (req, res, next) => {
   try {
     const hours = Math.max(1, Number(req.query.hours) || 24);
@@ -863,8 +1050,25 @@ app.get('/health', (_req, res) => {
       ...redditFetchStatus,
       cacheSize: redditInterestByTicker.size,
     },
+    telegram: {
+      enabled: telegram.enabled,
+    },
     lastRun,
   });
+});
+
+app.post('/telegram/test', async (_req, res) => {
+  const recipients = (await loadAlertRecipients()).filter((entry) => entry.enabled).map((entry) => entry.recipient);
+  const result = await telegram.sendTest({
+    text: `[Ticker Monitor Test]\nTime: ${new Date().toISOString()}\nThis is a manual test from the app.`,
+    recipients,
+  });
+
+  if (result.reason !== 'ok') {
+    return res.status(400).json(result);
+  }
+
+  return res.json(result);
 });
 
 app.post('/config/thresholds', (req, res) => {
@@ -927,6 +1131,7 @@ app.use((error, _req, res, _next) => {
 async function start() {
   await ensureCsv(HISTORY_CSV, HISTORY_HEADERS);
   await ensureCsv(ALERTS_CSV, ALERT_HEADERS);
+  await ensureCsv(ALERT_RECIPIENTS_CSV, ALERT_RECIPIENT_HEADERS);
   await bootstrapStateFromHistory();
 
   app.listen(PORT, () => {

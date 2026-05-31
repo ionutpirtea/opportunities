@@ -94,6 +94,10 @@ body {
   width: 90px;
 }
 
+.filters .input-wide {
+  width: 240px;
+}
+
 .filters select {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -232,9 +236,17 @@ th {
 }
 
 .index-canvas {
+  margin-top: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.index-canvas-wrap {
   margin-top: 10px;
   width: 100%;
   height: 320px;
+  position: relative;
 }
 
 @media (max-width: 900px) {

@@ -15,6 +15,29 @@ function readConfig() {
   };
 }
 
+function normalizeRecipient(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+  if (raw.toLowerCase().startsWith('whatsapp:')) {
+    return raw;
+  }
+  return `whatsapp:${raw}`;
+}
+
+function resolveRecipients(recipients, fallbackTo) {
+  const values = Array.isArray(recipients) ? recipients : [];
+  const normalized = values.map((value) => normalizeRecipient(value)).filter(Boolean);
+
+  if (normalized.length > 0) {
+    return [...new Set(normalized)];
+  }
+
+  const fallback = normalizeRecipient(fallbackTo);
+  return fallback ? [fallback] : [];
+}
+
 function buildMessage(alertRow) {
   const direction = Number(alertRow.change_pct) >= 0 ? 'UP' : 'DOWN';
   return [
@@ -63,7 +86,7 @@ function createWhatsAppSender() {
     };
   }
 
-  if (!cfg.accountSid || !cfg.authToken || !cfg.from || !cfg.to) {
+  if (!cfg.accountSid || !cfg.authToken || !cfg.from) {
     return {
       enabled,
       async sendTest() {
@@ -79,33 +102,55 @@ function createWhatsAppSender() {
 
   return {
     enabled,
-    async sendTest({ text } = {}) {
-      const body = text || `[Ticker Monitor Test]\nTime: ${new Date().toISOString()}\nIf you got this, WhatsApp alerts are configured correctly.`;
-      try {
-        await client.messages.create({
-          from: cfg.from,
-          to: cfg.to,
-          body,
-        });
-
-        return {
-          sent: 1,
-          failed: 0,
-          reason: 'ok',
-          mode: cfg.digestMode === 'single' ? 'single' : 'multiple',
-        };
-      } catch {
+    async sendTest({ text, recipients = null } = {}) {
+      const recipientList = resolveRecipients(recipients, cfg.to);
+      if (recipientList.length === 0) {
         return {
           sent: 0,
-          failed: 1,
-          reason: 'send-failed',
+          failed: 0,
+          reason: 'no-recipients',
           mode: cfg.digestMode === 'single' ? 'single' : 'multiple',
         };
       }
+
+      const body = text || `[Ticker Monitor Test]\nTime: ${new Date().toISOString()}\nIf you got this, WhatsApp alerts are configured correctly.`;
+      let sent = 0;
+      let failed = 0;
+
+      for (const to of recipientList) {
+        try {
+          await client.messages.create({
+            from: cfg.from,
+            to,
+            body,
+          });
+          sent += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+
+      return {
+        sent,
+        failed,
+        reason: sent > 0 ? 'ok' : 'send-failed',
+        mode: cfg.digestMode === 'single' ? 'single' : 'multiple',
+      };
     },
-    async sendAlerts(alertRows) {
+    async sendAlerts(alertRows, { recipients = null } = {}) {
       const rows = Array.isArray(alertRows) ? alertRows : [];
       const digestMode = cfg.digestMode === 'single' ? 'single' : 'multiple';
+      const recipientList = resolveRecipients(recipients, cfg.to);
+
+      if (recipientList.length === 0) {
+        return {
+          sent: 0,
+          failed: 0,
+          skipped: 0,
+          reason: 'no-recipients',
+          mode: digestMode,
+        };
+      }
 
       if (rows.length === 0) {
         return {
@@ -119,29 +164,29 @@ function createWhatsAppSender() {
 
       if (digestMode === 'single') {
         const body = buildDigestMessage(rows);
-        try {
-          await client.messages.create({
-            from: cfg.from,
-            to: cfg.to,
-            body,
-          });
+        let sent = 0;
+        let failed = 0;
 
-          return {
-            sent: 1,
-            failed: 0,
-            skipped: 0,
-            reason: 'ok',
-            mode: digestMode,
-          };
-        } catch {
-          return {
-            sent: 0,
-            failed: 1,
-            skipped: 0,
-            reason: 'send-failed',
-            mode: digestMode,
-          };
+        for (const to of recipientList) {
+          try {
+            await client.messages.create({
+              from: cfg.from,
+              to,
+              body,
+            });
+            sent += 1;
+          } catch {
+            failed += 1;
+          }
         }
+
+        return {
+          sent,
+          failed,
+          skipped: 0,
+          reason: sent > 0 ? 'ok' : 'send-failed',
+          mode: digestMode,
+        };
       }
 
       const max = Number.isFinite(cfg.maxMessagesPerRun) ? Math.max(1, cfg.maxMessagesPerRun) : 5;
@@ -153,15 +198,17 @@ function createWhatsAppSender() {
 
       for (const row of toSend) {
         const body = buildMessage(row);
-        try {
-          await client.messages.create({
-            from: cfg.from,
-            to: cfg.to,
-            body,
-          });
-          sent += 1;
-        } catch {
-          failed += 1;
+        for (const to of recipientList) {
+          try {
+            await client.messages.create({
+              from: cfg.from,
+              to,
+              body,
+            });
+            sent += 1;
+          } catch {
+            failed += 1;
+          }
         }
       }
 

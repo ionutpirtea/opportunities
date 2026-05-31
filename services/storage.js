@@ -34,6 +34,13 @@ async function appendCsvRows(filePath, headers, rows) {
   await fs.appendFile(filePath, `${body}\n`, 'utf8');
 }
 
+async function overwriteCsvRows(filePath, headers, rows) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const body = rows && rows.length > 0 ? `${rows.map((row) => serializeCsvRow(headers, row)).join('\n')}\n` : '';
+  const headerLine = `${headers.join(',')}\n`;
+  await fs.writeFile(filePath, `${headerLine}${body}`, 'utf8');
+}
+
 function parseCsvLine(line) {
   const output = [];
   let current = '';
@@ -89,5 +96,6 @@ async function readCsv(filePath) {
 module.exports = {
   ensureCsv,
   appendCsvRows,
+  overwriteCsvRows,
   readCsv,
 };

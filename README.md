@@ -34,6 +34,7 @@ Tickers are read from `tickers.csv`. The parser accepts commas/newlines and igno
 - `GET /report` - HTML report with latest prices and recent alerts
 	- Add `?refreshRefs=1` to force-refresh historical reference prices
 - `GET /index-charts` - YTD chart page for S&P 500, FTSE 100, DAX, EURO STOXX 50, CAC 40, and Nikkei 225
+- `GET /alerts-management` - Manage Telegram recipients (add/remove/enable/disable), send a test alert, and edit thresholds for 52W, 1D, and 2D rules
 - `POST /config/thresholds` - Update runtime alert thresholds from UI (`thresholdPct`, `threshold2DayPct`)
 - `GET /movers` - HTML page for biggest movers over a selectable time window
 - `POST /run-check` - Trigger manual check immediately
@@ -47,8 +48,10 @@ Current alerts are saved in CSV and shown in the report. Good notification chann
 - Discord webhook
 - Push notifications (Pushover or Firebase Cloud Messaging)
 
+The app can also send Telegram messages for stocks that meet the same rules used on the Alerts page (52-week gap, 1D/2D drop gate, market cap gate, and cash-flow exclusion).
+
 ## WhatsApp Alerts (Twilio)
-The app can send WhatsApp alerts for price moves that pass `ALERT_THRESHOLD_PCT`.
+WhatsApp support is kept for compatibility, but automated alert broadcasting now uses Telegram.
 
 1. Create a Twilio account and enable WhatsApp Sandbox (or approved WhatsApp sender).
 2. Copy `.env.example` to `.env` and set:
@@ -56,8 +59,12 @@ The app can send WhatsApp alerts for price moves that pass `ALERT_THRESHOLD_PCT`
 	- `TWILIO_ACCOUNT_SID`
 	- `TWILIO_AUTH_TOKEN`
 	- `TWILIO_WHATSAPP_FROM` (example: `whatsapp:+14155238886`)
-	- `TWILIO_WHATSAPP_TO` (example: `whatsapp:+407XXXXXXXX`)
+	- `TWILIO_WHATSAPP_TO` (optional fallback recipient if none are configured in UI)
 3. Restart the app.
+
+Recipients:
+- Use `GET /alerts-management` to add/remove Telegram recipients and enable/disable each recipient.
+- Only enabled recipients receive Telegram alerts.
 
 Safety control:
 - `WHATSAPP_DIGEST_MODE=single` sends one digest message per run (recommended).
@@ -70,3 +77,27 @@ Thresholds:
 - You can change both live from the report page using the threshold form (runtime only; resets after app restart unless you also update `.env`).
 
 Delivery status appears in `/health` under `lastRun.whatsapp`.
+
+## Telegram Alerts
+The app can send Telegram alerts for stocks that meet the Alerts page criteria.
+
+Each Telegram alert message includes:
+- Ticker
+- Company description
+- Current price
+- Check execution time
+
+1. Create a Telegram bot with BotFather and copy the bot token.
+2. Get your target `chat_id` (user, group, or channel).
+3. Set these environment variables in `.env`:
+	- `TELEGRAM_ALERTS_ENABLED=true`
+	- `TELEGRAM_BOT_TOKEN`
+	- `TELEGRAM_CHAT_ID` (optional fallback recipient when no managed recipients are enabled)
+	- `TELEGRAM_MAX_MESSAGES_PER_RUN` (optional safety cap)
+4. Restart the app.
+
+Recipient management and testing:
+- Use `GET /alerts-management` to add recipients (`chat_id` or `@username`) and toggle enable/disable.
+- Use the "Test Telegram Alert" button on Alerts Management page, or call `POST /telegram/test`.
+
+Delivery status appears in `/health` under `lastRun.telegram`.

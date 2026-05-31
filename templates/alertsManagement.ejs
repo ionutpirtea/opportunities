@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title><%= pageTitle %></title>
+    <link rel="stylesheet" href="/public/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <nav class="top-nav">
+        <a href="/report">Stock Report</a>
+        <a href="/index-report">Index Report</a>
+        <a href="/index-charts">Index Charts</a>
+        <a href="/alerts-page">Alerts</a>
+        <a href="/alerts-management" class="active">Alerts Management</a>
+        <a href="/movers">Biggest Movers</a>
+      </nav>
+
+      <header class="hero">
+        <div>
+          <h1>Alerts Management</h1>
+          <p>Manage Telegram recipients and alert thresholds used by automated checks.</p>
+        </div>
+        <div class="hero-meta">
+          <div class="filters">
+            <button id="testTelegramBtn" type="button">Test Telegram Alert</button>
+          </div>
+          <p id="telegramStatus" class="muted"></p>
+          <p><strong>Generated:</strong> <%= generatedAt %></p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <h2>Alert Thresholds</h2>
+        <form id="thresholdForm" class="filters" action="#">
+          <label>
+            52W Gap %
+            <input id="thresholdPctInput" type="number" min="0.1" max="100" step="0.1" value="<%= thresholdPct %>" />
+          </label>
+          <label>
+            1D Drop %
+            <input id="threshold1DayInput" type="number" min="0.1" max="100" step="0.1" value="<%= oneDayDropPct %>" />
+          </label>
+          <label>
+            2D Drop %
+            <input id="threshold2DayInput" type="number" min="0.1" max="100" step="0.1" value="<%= twoDayDropPct %>" />
+          </label>
+          <button id="saveThresholdsBtn" type="submit">Save Thresholds</button>
+        </form>
+        <p id="thresholdStatus" class="muted"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Telegram Recipients</h2>
+        <form id="recipientForm" class="filters" action="#">
+          <label>
+            Chat ID or @username
+            <input id="recipientInput" class="input-wide" type="text" placeholder="-123456789 or @my_channel" />
+          </label>
+          <button id="addRecipientBtn" type="submit">Add Recipient</button>
+        </form>
+        <p class="muted">Use Telegram chat id (number, often negative for groups) or @username. Phone numbers are not valid recipients.</p>
+        <p id="recipientStatus" class="muted"></p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Recipient</th>
+                <th>Enabled</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="recipientTableBody">
+              <% if (!recipients || recipients.length === 0) { %>
+              <tr>
+                <td colspan="3">No Telegram recipients configured.</td>
+              </tr>
+              <% } %>
+              <% (recipients || []).forEach((entry) => { %>
+              <tr>
+                <td><strong><%= entry.recipient %></strong></td>
+                <td>
+                  <button
+                    type="button"
+                    class="toggle-recipient-btn"
+                    data-recipient="<%= entry.recipient %>"
+                    data-enabled="<%= entry.enabled ? 'true' : 'false' %>"
+                  ><%= entry.enabled ? 'Enabled' : 'Disabled' %></button>
+                </td>
+                <td>
+                  <button type="button" class="remove-recipient-btn" data-recipient="<%= entry.recipient %>">Remove</button>
+                </td>
+              </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const thresholdForm = document.getElementById('thresholdForm');
+      const thresholdStatus = document.getElementById('thresholdStatus');
+      const recipientForm = document.getElementById('recipientForm');
+      const recipientInput = document.getElementById('recipientInput');
+      const recipientStatus = document.getElementById('recipientStatus');
+      const recipientTableBody = document.getElementById('recipientTableBody');
+      const testTelegramBtn = document.getElementById('testTelegramBtn');
+      const telegramStatus = document.getElementById('telegramStatus');
+
+      const renderRecipients = (recipients) => {
+        const rows = Array.isArray(recipients) ? recipients : [];
+        if (rows.length === 0) {
+          recipientTableBody.innerHTML = '<tr><td colspan="3">No Telegram recipients configured.</td></tr>';
+          return;
+        }
+
+        recipientTableBody.innerHTML = rows
+          .map(
+            (entry) => `
+              <tr>
+                <td><strong>${entry.recipient}</strong></td>
+                <td>
+                  <button
+                    type="button"
+                    class="toggle-recipient-btn"
+                    data-recipient="${entry.recipient}"
+                    data-enabled="${entry.enabled ? 'true' : 'false'}"
+                  >${entry.enabled ? 'Enabled' : 'Disabled'}</button>
+                </td>
+                <td><button type="button" class="remove-recipient-btn" data-recipient="${entry.recipient}">Remove</button></td>
+              </tr>
+            `
+          )
+          .join('');
+      };
+
+      const setRecipientButtonsState = (disabled) => {
+        document.querySelectorAll('.remove-recipient-btn, .toggle-recipient-btn').forEach((btn) => {
+          btn.disabled = disabled;
+        });
+      };
+
+      if (testTelegramBtn) {
+        testTelegramBtn.addEventListener('click', async () => {
+          testTelegramBtn.disabled = true;
+          const previousText = testTelegramBtn.textContent;
+          testTelegramBtn.textContent = 'Sending...';
+          telegramStatus.textContent = '';
+
+          try {
+            const res = await fetch('/telegram/test', { method: 'POST' });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              throw new Error(payload.reason || payload.error || 'Failed to send Telegram test alert');
+            }
+
+            telegramStatus.textContent = `Telegram test sent (${payload.sent || 0} delivered).`;
+          } catch (error) {
+            telegramStatus.textContent = error.message;
+          } finally {
+            testTelegramBtn.disabled = false;
+            testTelegramBtn.textContent = previousText;
+          }
+        });
+      }
+
+      if (thresholdForm) {
+        thresholdForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const saveBtn = document.getElementById('saveThresholdsBtn');
+          const payload = {
+            thresholdPct: Number(document.getElementById('thresholdPctInput').value),
+            alert1DayDropPct: Number(document.getElementById('threshold1DayInput').value),
+            alert2DayDropPct: Number(document.getElementById('threshold2DayInput').value),
+          };
+
+          saveBtn.disabled = true;
+          const previousText = saveBtn.textContent;
+          saveBtn.textContent = 'Saving...';
+          thresholdStatus.textContent = '';
+
+          try {
+            const res = await fetch('/config/thresholds', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({ error: 'Failed to save alert rules' }));
+              throw new Error(err.error || 'Failed to save alert rules');
+            }
+
+            thresholdStatus.textContent = 'Thresholds updated.';
+          } catch (error) {
+            thresholdStatus.textContent = error.message;
+          } finally {
+            saveBtn.disabled = false;
+            saveBtn.textContent = previousText;
+          }
+        });
+      }
+
+      if (recipientForm) {
+        recipientForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const addBtn = document.getElementById('addRecipientBtn');
+          const recipient = String(recipientInput.value || '').trim();
+          if (!recipient) {
+            recipientStatus.textContent = 'Recipient is required.';
+            return;
+          }
+
+          addBtn.disabled = true;
+          setRecipientButtonsState(true);
+          const previousText = addBtn.textContent;
+          addBtn.textContent = 'Adding...';
+          recipientStatus.textContent = '';
+
+          try {
+            const res = await fetch('/alerts-recipients', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ recipient }),
+            });
+
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              throw new Error(payload.error || 'Failed to add Telegram recipient');
+            }
+
+            renderRecipients(payload.recipients || []);
+            recipientInput.value = '';
+            recipientStatus.textContent = 'Recipient added.';
+          } catch (error) {
+            recipientStatus.textContent = error.message;
+          } finally {
+            addBtn.disabled = false;
+            setRecipientButtonsState(false);
+            addBtn.textContent = previousText;
+          }
+        });
+      }
+
+      if (recipientTableBody) {
+        recipientTableBody.addEventListener('click', async (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLButtonElement) || !target.classList.contains('remove-recipient-btn')) {
+            if (!(target instanceof HTMLButtonElement) || !target.classList.contains('toggle-recipient-btn')) {
+              return;
+            }
+
+            const recipient = target.getAttribute('data-recipient') || '';
+            const enabled = String(target.getAttribute('data-enabled') || 'false') === 'true';
+            if (!recipient) {
+              return;
+            }
+
+            setRecipientButtonsState(true);
+            recipientStatus.textContent = '';
+
+            try {
+              const res = await fetch('/alerts-recipients/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ recipient, enabled: !enabled }),
+              });
+
+              const payload = await res.json().catch(() => ({}));
+              if (!res.ok) {
+                throw new Error(payload.error || 'Failed to update recipient state');
+              }
+
+              renderRecipients(payload.recipients || []);
+              recipientStatus.textContent = 'Recipient state updated.';
+            } catch (error) {
+              recipientStatus.textContent = error.message;
+            } finally {
+              setRecipientButtonsState(false);
+            }
+
+            return;
+          }
+
+          const recipient = target.getAttribute('data-recipient') || '';
+          if (!recipient) {
+            return;
+          }
+
+          setRecipientButtonsState(true);
+          recipientStatus.textContent = '';
+
+          try {
+            const res = await fetch('/alerts-recipients/remove', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ recipient }),
+            });
+
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              throw new Error(payload.error || 'Failed to remove Telegram recipient');
+            }
+
+            renderRecipients(payload.recipients || []);
+            recipientStatus.textContent = 'Recipient removed.';
+          } catch (error) {
+            recipientStatus.textContent = error.message;
+          } finally {
+            setRecipientButtonsState(false);
+          }
+        });
+      }
+    </script>
+  </body>
+</html>
